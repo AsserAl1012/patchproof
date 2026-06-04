@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchproof
+  template:
+    metadata:
+      labels:
+        app: patchproof
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: patchproof
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+          ports:
+            - containerPort: 4173
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: "{{ $value }}"
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 4173
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 4173
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources: {{- toYaml .Values.resources | nindent 12 }}

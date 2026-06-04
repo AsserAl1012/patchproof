@@ -1,0 +1,51 @@
+{{- if .Values.runner.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchproof-runner
+spec:
+  replicas: {{ .Values.runner.replicas }}
+  selector:
+    matchLabels:
+      app: patchproof-runner
+  template:
+    metadata:
+      labels:
+        app: patchproof-runner
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: runner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+          command: ["node", "bin/patchproof.js", "runner", "--isolation", "{{ .Values.runner.isolation }}"]
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: "{{ $value }}"
+            {{- end }}
+            - name: PATCHPROOF_RUNNER_ISOLATION
+              value: "{{ .Values.runner.isolation }}"
+            - name: PATCHPROOF_RUNNER_IMAGE
+              value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            {{- if eq .Values.runner.isolation "docker" }}
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        {{- if eq .Values.runner.isolation "docker" }}
+        - name: docker-socket
+          hostPath:
+            path: {{ .Values.runner.dockerSocketPath }}
+            type: Socket
+        {{- end }}
+{{- end }}

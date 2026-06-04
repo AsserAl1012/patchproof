@@ -1,0 +1,25 @@
+version: 1
+project:
+  language: javascript
+  testCommand: npm test
+  installCommand: npm ci
+  allowedPaths:
+    - src/**
+    - tests/**
+  forbiddenPaths:
+    - .env
+    - secrets/**
+runner:
+  timeoutSeconds: 600
+  memoryMb: 2048
+  cpus: 2
+  network: disabled
+repair:
+  maxCandidates: 8
+  requireCertificate: true
+  minEvidenceScore: 0.75
+model:
+  provider: openai-compatible
+  endpointEnv: PATCHPROOF_MODEL_BASE_URL
+  apiKeyEnv: PATCHPROOF_MODEL_API_KEY
+  model: configurable-by-admin

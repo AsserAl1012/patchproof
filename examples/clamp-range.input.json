@@ -1,0 +1,14 @@
+{
+  "source": "function clamp(value, min, max) {\n  if (value < min) return min;\n  if (value > min) return max;\n  return value;\n}",
+  "tests": [
+    { "name": "below min is raised", "args": [-5, 0, 10], "expect": 0 },
+    { "name": "above max is lowered", "args": [12, 0, 10], "expect": 10 },
+    { "name": "in range is preserved", "args": [6, 0, 10], "expect": 6 },
+    { "name": "lower boundary is stable", "args": [0, 0, 10], "expect": 0 },
+    { "name": "upper boundary is stable", "args": [10, 0, 10], "expect": 10 }
+  ],
+  "bugReport": "clamp(value, min, max) returns max for in-range values above min. It should only return max when value is greater than max.",
+  "precondition": "args[1] <= args[2]",
+  "mayChange": "args[0] > args[1] && args[0] < args[2]",
+  "postcondition": "result === Math.min(Math.max(args[0], args[1]), args[2])"
+}

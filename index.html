@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PatchProof</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>PatchProof</h1>
+          <p>Private AI bug repair with replayable evidence certificates.</p>
+        </div>
+        <div class="toolbar">
+          <button id="dashboardRunButton" class="primary">Run Project</button>
+          <button id="runButton" class="primary">Run PatchProof</button>
+          <button id="applyPatchButton">Apply Patch</button>
+          <button id="resetButton">Reset Scenario</button>
+          <button id="copyCertButton">Copy Certificate</button>
+          <button id="downloadCertButton">Download Certificate</button>
+        </div>
+      </header>
+
+      <section class="saas-dashboard">
+        <div class="auth-card" id="authCard">
+          <div class="panel-header">
+            <span>Private SaaS</span>
+            <span id="authState" class="muted">Not signed in</span>
+          </div>
+          <div class="auth-grid">
+            <input id="authEmailInput" type="email" placeholder="owner@example.com">
+            <input id="authPasswordInput" type="password" placeholder="password, 8+ characters">
+            <input id="authOrgInput" type="text" placeholder="organization name">
+            <div class="auth-actions">
+              <button id="bootstrapButton">Bootstrap Admin</button>
+              <button id="loginButton">Login</button>
+              <button id="logoutButton">Logout</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="panel dashboard-panel">
+            <div class="panel-header">
+              <span>Projects</span>
+              <span id="orgLabel" class="muted">No org</span>
+            </div>
+            <div class="project-form">
+              <input id="projectNameInput" type="text" placeholder="Project name">
+              <input id="projectRepoInput" type="text" placeholder="Repository URL">
+              <button id="createProjectButton">Create Project</button>
+            </div>
+            <div class="project-form compact-form">
+              <input id="githubInstallationInput" type="text" placeholder="GitHub installation id">
+              <input id="githubRepoInput" type="text" placeholder="owner/repo">
+              <button id="linkGithubButton">Link GitHub</button>
+            </div>
+            <div id="projectList" class="dashboard-list">Login to load projects.</div>
+          </div>
+
+          <div class="panel dashboard-panel">
+            <div class="panel-header">
+              <span>Runs</span>
+              <span id="selectedProjectLabel" class="muted">No project selected</span>
+            </div>
+            <div id="runList" class="dashboard-list">Create or select a project.</div>
+          </div>
+
+          <div class="panel dashboard-panel">
+            <div class="panel-header">
+              <span>Operations</span>
+              <span id="runnerLabel" class="muted">Runner unknown</span>
+            </div>
+            <div class="ops-grid">
+              <button id="loadSettingsButton">Load Settings</button>
+              <button id="loadRunnersButton">Runner Health</button>
+              <button id="loadApiKeysButton">API Keys</button>
+              <button id="createApiKeyButton">Create API Key</button>
+              <button id="loadAuditButton">Audit Log</button>
+            </div>
+            <div id="opsOutput" class="ops-output">Login to inspect operations.</div>
+          </div>
+        </div>
+      </section>
+
+      <main class="workspace">
+        <aside class="scenario-rail">
+          <div class="section-title">Bug Lab</div>
+          <div id="scenarioList" class="scenario-list"></div>
+          <div class="score-box">
+            <span class="score-label">Evidence</span>
+            <strong id="evidenceScore">--</strong>
+            <span id="runState" aria-live="polite">Idle</span>
+          </div>
+          <div class="history-box">
+            <div class="history-header">
+              <span>Saved Runs</span>
+              <button id="exportRunsButton">Export</button>
+            </div>
+            <div id="historyList" class="history-list">No saved runs yet.</div>
+            <label class="import-button" for="importCertInput">Import Certificate</label>
+            <input id="importCertInput" type="file" accept="application/json,.json">
+          </div>
+        </aside>
+
+        <section class="editor-grid">
+          <div class="panel code-panel">
+            <div class="panel-header">
+              <span>Function Under Repair</span>
+              <span id="functionName" class="muted">not compiled</span>
+            </div>
+            <textarea id="sourceInput" spellcheck="false"></textarea>
+          </div>
+
+          <div class="panel code-panel">
+            <div class="panel-header">
+              <span>Executable Tests</span>
+              <span class="muted">JSON cases</span>
+            </div>
+            <textarea id="testsInput" spellcheck="false"></textarea>
+          </div>
+
+          <div class="panel code-panel">
+            <div class="panel-header">
+              <span>Behavioral Envelope</span>
+              <span class="muted">JavaScript expressions</span>
+            </div>
+            <label class="field-label" for="bugReportInput">Bug report</label>
+            <textarea id="bugReportInput" class="small-editor" spellcheck="false"></textarea>
+            <label class="field-label" for="preconditionInput">Precondition</label>
+            <input id="preconditionInput" type="text" spellcheck="false">
+            <label class="field-label" for="mayChangeInput">May-change predicate</label>
+            <input id="mayChangeInput" type="text" spellcheck="false">
+            <label class="field-label" for="postconditionInput">Postcondition</label>
+            <input id="postconditionInput" type="text" spellcheck="false">
+          </div>
+
+          <div class="panel results-panel">
+            <div class="panel-header">
+              <span>Candidate Patches</span>
+              <span id="candidateCount" class="muted">0 candidates</span>
+            </div>
+            <div id="candidateList" class="candidate-list empty-state">Run the engine to generate patches.</div>
+          </div>
+        </section>
+
+        <section class="evidence-area">
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="certificate">Certificate</button>
+            <button class="tab" data-tab="diff">Selected Diff</button>
+            <button class="tab" data-tab="console">Validation Console</button>
+          </div>
+          <div id="certificatePanel" class="tab-panel active">
+            <pre id="certificateOutput">{}</pre>
+          </div>
+          <div id="diffPanel" class="tab-panel">
+            <pre id="diffOutput">No selected patch yet.</pre>
+          </div>
+          <div id="consolePanel" class="tab-panel">
+            <div id="consoleOutput" class="console-log">No run yet.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,102 @@
+# Hosted Deployment
+
+PatchProof now includes a hosted API path:
+
+```text
+POST /api/run
+```
+
+The browser app uses this endpoint by default. The server runs validation in a separate Node process with:
+
+- Node permission mode;
+- no filesystem write permission;
+- no child-process permission;
+- no worker permission;
+- lower memory limit;
+- wall-clock timeout;
+- request-size limit;
+- per-address rate limiting.
+
+This is suitable for self-hosted/private SaaS deployments when paired with the queued Docker runner. It is still not a substitute for a professional security review before broad hosted arbitrary-code exposure.
+
+Private SaaS mode adds authenticated organizations, projects, persistent runs, queued jobs, audit events, admin settings, GitHub integration, artifact storage, and runner health APIs. Production mode uses Postgres, Redis, and S3/MinIO. JSON storage remains available only for local/demo usage.
+
+## Local Container Run
+
+```powershell
+docker compose up --build
+```
+
+Open:
+
+```text
+http://127.0.0.1:4173
+```
+
+Compose starts:
+
+- `patchproof`: API and web app;
+- `patchproof-runner`: Redis worker with Docker isolation;
+- `postgres`: durable SaaS state;
+- `redis`: job queue;
+- `minio`: S3-compatible artifact storage;
+- `minio-init`: bucket bootstrap.
+
+## Reverse Proxy Recommendations
+
+Put PatchProof behind a reverse proxy that adds:
+
+- TLS;
+- request body limit at or below 64 KB;
+- IP/user rate limiting;
+- access logs;
+- WAF or bot filtering if exposed publicly;
+- no request buffering of huge bodies;
+- security monitoring.
+
+## Required Production Controls
+
+Before public internet exposure:
+
+- run as non-root;
+- use read-only filesystem;
+- disable outbound network at container or firewall level;
+- set memory and CPU limits;
+- cap processes/PIDs;
+- rotate logs;
+- publish a security contact;
+- keep dependencies and Node patched.
+
+The included `compose.yml` gives a reasonable local baseline for these controls.
+
+## Backing Services
+
+The compose stack includes PostgreSQL 16, Redis 7, and MinIO. `/readyz` checks all three backing services. `/healthz` is a liveness check and does not require backing services.
+
+Run migrations manually when needed:
+
+```powershell
+npm run migrate
+```
+
+Run a standalone worker:
+
+```powershell
+npm run runner -- --isolation docker
+```
+
+## Bind Host
+
+Local CLI defaults to:
+
+```text
+HOST=127.0.0.1
+```
+
+Container deployment uses:
+
+```text
+HOST=0.0.0.0
+```
+
+Keep the container port bound to `127.0.0.1` on the host unless a reverse proxy is in front of it.

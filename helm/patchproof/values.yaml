@@ -1,0 +1,39 @@
+image:
+  repository: patchproof
+  tag: "0.4.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 4173
+
+env:
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  PORT: "4173"
+  PATCHPROOF_STORE_DRIVER: postgres
+  DATABASE_URL: postgres://patchproof:patchproof@postgres:5432/patchproof
+  PATCHPROOF_QUEUE_DRIVER: redis
+  REDIS_URL: redis://redis:6379
+  PATCHPROOF_ARTIFACT_DRIVER: s3
+  PATCHPROOF_S3_ENDPOINT: http://minio:9000
+  PATCHPROOF_S3_BUCKET: patchproof
+  PATCHPROOF_S3_ACCESS_KEY_ID: patchproof
+  PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
+  PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
+  PATCHPROOF_RUN_MODE: queue
+  PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+
+runner:
+  enabled: true
+  replicas: 1
+  isolation: docker
+  dockerSocketPath: /var/run/docker.sock
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi

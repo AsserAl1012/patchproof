@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log*
+coverage/
+.nyc_output/
+dist/
+data/
+*.tgz
+certificate.json
+patchproof-run-history.json
+.DS_Store
+Thumbs.db

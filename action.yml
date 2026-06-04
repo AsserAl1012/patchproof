@@ -1,0 +1,12 @@
+name: PatchProof Verify
+description: Verify a replayable PatchProof certificate.
+inputs:
+  certificate:
+    description: Path to a PatchProof certificate JSON file.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify PatchProof certificate
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/bin/patchproof.js" verify "${{ inputs.certificate }}"

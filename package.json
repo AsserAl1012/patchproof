@@ -1,0 +1,57 @@
+{
+  "name": "patchproof",
+  "version": "0.4.0",
+  "description": "AI-style bug repair with bounded behavioral evidence certificates.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "patchproof": "./bin/patchproof.js"
+  },
+  "exports": {
+    ".": "./engine.js",
+    "./server": "./server.js"
+  },
+  "files": [
+    ".env.example",
+    "action.yml",
+    "app.js",
+    "bin",
+    "compose.yml",
+    "Dockerfile",
+    "docs",
+    "engine.js",
+    "examples",
+    "helm",
+    "index.html",
+    "migrations",
+    "patchproof.yml",
+    "README.md",
+    "saas",
+    "sandbox",
+    "server.js",
+    "styles.css",
+    "worker.js",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node bin/patchproof.js serve",
+    "runner": "node bin/patchproof.js runner",
+    "migrate": "node bin/patchproof.js migrate",
+    "test": "node --test",
+    "check": "node --check engine.js && node --check app.js && node --check worker.js && node --check server.js && node --check bin/patchproof.js && node --check saas/store.js && node --check saas/postgres-store.js && node --check saas/factory.js && node --check saas/migrations.js && node --check saas/artifacts.js && node --check saas/queue.js && node --check saas/runner-service.js && node --check saas/secrets.js && node --check saas/rbac.js && node --check saas/config.js && node --check saas/model-providers.js && node --check saas/runner-policy.js && node --check saas/github.js && node --check saas/github-app.js && node --check sandbox/hosted-runner.js && node --check sandbox/runner-child.js && node --check sandbox/docker-runner.js",
+    "smoke": "node scripts/smoke.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1061.0",
+    "@octokit/auth-app": "^8.2.0",
+    "@octokit/rest": "^22.0.1",
+    "pg": "^8.21.0",
+    "redis": "^6.0.0",
+    "tar-stream": "^3.2.0"
+  }
+}

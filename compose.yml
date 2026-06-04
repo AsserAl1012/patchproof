@@ -1,0 +1,121 @@
+services:
+  patchproof:
+    build: .
+    image: patchproof:0.4.0
+    ports:
+      - "127.0.0.1:4173:4173"
+    environment:
+      NODE_ENV: production
+      PORT: "4173"
+      HOST: "0.0.0.0"
+      PATCHPROOF_STORE_DRIVER: postgres
+      DATABASE_URL: postgres://patchproof:patchproof@postgres:5432/patchproof
+      PATCHPROOF_QUEUE_DRIVER: redis
+      REDIS_URL: redis://redis:6379
+      PATCHPROOF_ARTIFACT_DRIVER: s3
+      PATCHPROOF_S3_ENDPOINT: http://minio:9000
+      PATCHPROOF_S3_BUCKET: patchproof
+      PATCHPROOF_S3_ACCESS_KEY_ID: patchproof
+      PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
+      PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
+      PATCHPROOF_RUN_MODE: queue
+      PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+  patchproof-runner:
+    build: .
+    image: patchproof:0.4.0
+    command: ["node", "bin/patchproof.js", "runner", "--isolation", "docker"]
+    environment:
+      NODE_ENV: production
+      PATCHPROOF_STORE_DRIVER: postgres
+      DATABASE_URL: postgres://patchproof:patchproof@postgres:5432/patchproof
+      PATCHPROOF_QUEUE_DRIVER: redis
+      REDIS_URL: redis://redis:6379
+      PATCHPROOF_ARTIFACT_DRIVER: s3
+      PATCHPROOF_S3_ENDPOINT: http://minio:9000
+      PATCHPROOF_S3_BUCKET: patchproof
+      PATCHPROOF_S3_ACCESS_KEY_ID: patchproof
+      PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
+      PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
+      PATCHPROOF_RUNNER_ISOLATION: docker
+      PATCHPROOF_RUNNER_IMAGE: patchproof:0.4.0
+      PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: patchproof
+      POSTGRES_USER: patchproof
+      POSTGRES_PASSWORD: patchproof
+    volumes:
+      - patchproof-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - patchproof-redis:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: patchproof
+      MINIO_ROOT_PASSWORD: patchproof-password
+    volumes:
+      - patchproof-minio:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 patchproof patchproof-password &&
+        mc mb --ignore-existing local/patchproof
+volumes:
+  patchproof-postgres:
+  patchproof-redis:
+  patchproof-minio:
