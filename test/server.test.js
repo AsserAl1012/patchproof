@@ -150,3 +150,23 @@ test("hosted API rejects unsafe source in isolated runner", async () => {
     server.close();
   }
 });
+
+test("GitHub webhook fails closed when no signing secret is configured", async () => {
+  const previous = process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET;
+  delete process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET;
+  const { server, baseUrl } = await startTestServer();
+  try {
+    const response = await fetch(`${baseUrl}/api/integrations/github/webhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comment: { body: "/patchproof verify" } })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.match(body.error.message, /disabled until PATCHPROOF_GITHUB_WEBHOOK_SECRET/);
+  } finally {
+    if (previous === undefined) delete process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET;
+    else process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET = previous;
+    server.close();
+  }
+});

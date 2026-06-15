@@ -8,11 +8,6 @@ import {
   runPatchProof,
   verifyCertificate
 } from "../engine.js";
-import { listen } from "../server.js";
-import { createSaasStore } from "../saas/factory.js";
-import { createJobQueue } from "../saas/queue.js";
-import { createArtifactStore } from "../saas/artifacts.js";
-import { runRunnerLoop } from "../saas/runner-service.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "help";
@@ -25,6 +20,7 @@ try {
   } else if (command === "serve") {
     const port = Number(readOption(args, "--port") || process.env.PORT || 4173);
     const host = readOption(args, "--host") || process.env.HOST || "127.0.0.1";
+    const { listen } = await import("../server.js");
     listen(port, { host });
   } else if (command === "runner") {
     await runnerCommand(args.slice(1));
@@ -103,6 +99,13 @@ async function verifyCommand(verifyArgs) {
 }
 
 async function runnerCommand(runnerArgs) {
+  const [{ createSaasStore }, { createJobQueue }, { createArtifactStore }, { runRunnerLoop }] =
+    await Promise.all([
+      import("../saas/factory.js"),
+      import("../saas/queue.js"),
+      import("../saas/artifacts.js"),
+      import("../saas/runner-service.js")
+    ]);
   const once = runnerArgs.includes("--once");
   const runnerId = readOption(runnerArgs, "--id") || process.env.PATCHPROOF_RUNNER_ID;
   const isolation = readOption(runnerArgs, "--isolation") || process.env.PATCHPROOF_RUNNER_ISOLATION;
@@ -114,6 +117,7 @@ async function runnerCommand(runnerArgs) {
 }
 
 async function migrateCommand() {
+  const { createSaasStore } = await import("../saas/factory.js");
   const store = createSaasStore({ driver: "postgres" });
   await store.load();
   const health = await store.health();

@@ -1,7 +1,7 @@
 import { createInputFromExample, examples } from "../engine.js";
 import { runPatchProofInRunner } from "../sandbox/docker-runner.js";
 import { buildRunnerPolicy } from "./runner-policy.js";
-import { modelProvenance, normalizeModelProvider } from "./model-providers.js";
+import { generateModelCandidates } from "./model-providers.js";
 import { buildCompletionComment, postGitHubComment } from "./github-app.js";
 
 const DEFAULT_RUNNER_ID = `runner_${process.pid}_${Math.random().toString(16).slice(2, 8)}`;
@@ -16,27 +16,47 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
   });
   await store.markJobRunning({ jobId: payload.jobId, runnerId, phase: "claimed" });
 
-  const detail = await store.getRunDetail(payload.runId);
-  if (!detail) throw new Error(`Run ${payload.runId} was not found.`);
-  const settings = await store.getSettings(detail.run.orgId);
-  const runnerPolicy = payload.runnerPolicy || buildRunnerPolicy({
-    orgId: detail.run.orgId,
-    projectId: detail.run.projectId,
-    runId: detail.run.id,
-    settings,
-    config: detail.project?.config || {}
-  });
-  const model = normalizeModelProvider(settings.modelProvider);
-  const input = resolveRunInput(detail);
   const logs = [`claimed ${payload.jobId}`, `phase baseline`, `phase repairing`, `phase verifying`];
 
   try {
+    const detail = await store.getRunDetail(payload.runId);
+    if (!detail) throw new Error(`Run ${payload.runId} was not found.`);
+    const settings = await store.getSettings(detail.run.orgId);
+    const runnerPolicy = payload.runnerPolicy || buildRunnerPolicy({
+      orgId: detail.run.orgId,
+      projectId: detail.run.projectId,
+      runId: detail.run.id,
+      settings,
+      config: detail.project?.config || {}
+    });
+    const input = resolveRunInput(detail);
     await store.updateJobPhase({ jobId: payload.jobId, phase: "baseline", logs: ["baseline evidence started"] });
     await store.updateJobPhase({ jobId: payload.jobId, phase: "repairing", logs: ["candidate generation started"] });
+    const repair = detail.project?.config?.repair || {};
+    const configuredCandidateLimit = positiveInteger(
+      repair.maxCandidates,
+      settings.modelProvider?.maxCandidates || 8
+    );
+    const generation = await generateModelCandidates({
+      settings: {
+        ...(settings.modelProvider || {}),
+        maxCandidates: configuredCandidateLimit
+      },
+      input
+    });
+    logs.push(
+      `model ${generation.provider}/${generation.model}: ${generation.candidates.length} candidate(s)`
+    );
     const result = await runPatchProofInRunner(
       {
         ...input,
-        modelProvenance: modelProvenance(model, input.bugReport || "", input.source || ""),
+        candidatePatches: generation.candidates,
+        modelProvenance: generation.provenance,
+        limits: {
+          ...(input.limits || {}),
+          maxCandidates: configuredCandidateLimit,
+          minEvidenceScore: boundedScore(repair.minEvidenceScore, input.limits?.minEvidenceScore || 0)
+        },
         runnerPolicy
       },
       runnerPolicy,
@@ -162,4 +182,14 @@ function resolveRunInput(detail) {
   const configInput = detail.project?.config?.repairInput || detail.project?.config?.github?.repairInput;
   if (configInput?.source) return configInput;
   return createInputFromExample(examples[0]);
+}
+
+function positiveInteger(value, fallback) {
+  const result = Number(value || fallback);
+  return Number.isInteger(result) && result > 0 ? result : Number(fallback);
+}
+
+function boundedScore(value, fallback) {
+  const result = Number(value ?? fallback);
+  return Number.isFinite(result) && result >= 0 && result <= 1 ? result : Number(fallback);
 }

@@ -44,7 +44,7 @@ test/
 3. Run baseline tests and require observed failing evidence.
 4. Generate a finite input domain from test values and boundary expansions.
 5. Filter the generated domain through the precondition.
-6. Generate candidate patches through local repair templates.
+6. Generate candidate patches through a configured model provider before sandbox execution, then add local repair-template candidates when capacity remains.
 7. For each candidate:
    - compile candidate;
    - run explicit tests;
@@ -69,26 +69,19 @@ test/
 
 PatchProof treats candidate generation as untrusted. A patch is only accepted when the verifier can produce bounded evidence. The certificate is intentionally scoped and includes residual risk rather than pretending the whole program is proven correct.
 
-## LLM Integration Point
+## Model Integration
 
-The local repair-template adapter in `engine.js` is the future LLM integration point. A production LLM adapter should return:
+`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Providers return:
 
 ```json
 {
-  "id": "p1",
   "title": "Patch title",
   "source": "function ...",
-  "diff": "--- old\n+++ new\n...",
-  "risk": ["boundary-change"],
-  "plannerTrace": {
-    "score": 3,
-    "matchedTerms": ["boundary"],
-    "rationale": "Why this candidate was proposed"
-  }
+  "rationale": "Why this candidate was proposed"
 }
 ```
 
-The verifier and certificate should remain the authority.
+The verifier computes diffs, treats generated code as untrusted, and remains the authority.
 
 ## Certificate Replay
 

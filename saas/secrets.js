@@ -36,6 +36,16 @@ export function maskSettingsSecrets(settings) {
   return clone;
 }
 
+export function assertProductionSecretConfiguration() {
+  if (process.env.NODE_ENV !== "production") return;
+  const value = String(process.env.PATCHPROOF_SECRET_KEY || "");
+  if (!value || value === "replace-with-random-32-byte-secret" || value.length < 32) {
+    throw new Error(
+      "PATCHPROOF_SECRET_KEY must be set to at least 32 non-placeholder characters in production."
+    );
+  }
+}
+
 export function encryptSecret(value) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", secretKey(), iv);
@@ -58,6 +68,7 @@ export function decryptSecret(value) {
 }
 
 function secretKey() {
+  assertProductionSecretConfiguration();
   return createHash("sha256").update(process.env.PATCHPROOF_SECRET_KEY || "patchproof-development-secret-key").digest();
 }
 

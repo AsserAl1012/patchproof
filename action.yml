@@ -9,4 +9,6 @@ runs:
   steps:
     - name: Verify PatchProof certificate
       shell: bash
-      run: node "$GITHUB_ACTION_PATH/bin/patchproof.js" verify "${{ inputs.certificate }}"
+      env:
+        PATCHPROOF_CERTIFICATE: ${{ inputs.certificate }}
+      run: node "$GITHUB_ACTION_PATH/bin/patchproof.js" verify "$PATCHPROOF_CERTIFICATE"

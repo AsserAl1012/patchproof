@@ -2,13 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { hasPermission, normalizeRole, requirePermission } from "../saas/rbac.js";
 import { parsePatchproofConfig } from "../saas/config.js";
-import { normalizeModelProvider, modelProvenance } from "../saas/model-providers.js";
+import {
+  buildRepairPrompt,
+  generateModelCandidates,
+  normalizeModelProvider,
+  modelProvenance
+} from "../saas/model-providers.js";
 import { buildRunnerPolicy } from "../saas/runner-policy.js";
 import { parsePatchProofCommand, verifyGitHubSignature } from "../saas/github.js";
 import { LocalArtifactStore } from "../saas/artifacts.js";
 import { MemoryJobQueue } from "../saas/queue.js";
 import { buildCompletionComment, buildQueuedComment } from "../saas/github-app.js";
-import { decryptSettingsSecrets, encryptSettingsSecrets, maskSettingsSecrets } from "../saas/secrets.js";
+import {
+  assertProductionSecretConfiguration,
+  decryptSettingsSecrets,
+  encryptSettingsSecrets,
+  maskSettingsSecrets
+} from "../saas/secrets.js";
 import { dockerArgsForPolicy } from "../sandbox/docker-runner.js";
 import { createHmac } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
@@ -51,6 +61,82 @@ test("model provider normalization records hashed provenance", () => {
   assert.equal(provider.provider, "openai-compatible");
   assert.equal(provenance.promptStored, false);
   assert.equal(provenance.promptHash.length, 64);
+});
+
+test("model provider generates structured repair candidates", async () => {
+  let request;
+  const generated = await generateModelCandidates({
+    settings: {
+      provider: "openai-compatible",
+      baseUrl: "https://models.example/v1",
+      apiKey: "secret",
+      model: "repair-model",
+      maxCandidates: 2
+    },
+    input: {
+      source: "function increment(value) { return value; }",
+      tests: [{ args: [1], expect: 2 }],
+      bugReport: "increment should add one"
+    },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  candidates: [
+                    {
+                      title: "Add one",
+                      rationale: "The function currently returns its input unchanged.",
+                      source: "function increment(value) { return value + 1; }"
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  });
+
+  assert.equal(request.url, "https://models.example/v1/chat/completions");
+  assert.equal(request.options.headers.Authorization, "Bearer secret");
+  assert.equal(generated.candidates.length, 1);
+  assert.equal(generated.candidates[0].provenance.provider, "openai-compatible");
+  assert.equal(generated.candidates[0].provenance.candidateHash.length, 64);
+  assert.match(buildRepairPrompt({ source: "function x() {}" }), /complete replacement/);
+});
+
+test("azure model provider uses deployment endpoint and api-key header", async () => {
+  let request;
+  await generateModelCandidates({
+    settings: {
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com",
+      apiKey: "azure-secret",
+      model: "repair-deployment",
+      maxCandidates: 1
+    },
+    input: { source: "function x() { return 0; }", bugReport: "return one" },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(
+        JSON.stringify({
+          choices: [
+            { message: { content: '{"candidates":[{"source":"function x() { return 1; }"}]}' } }
+          ]
+        }),
+        { status: 200 }
+      );
+    }
+  });
+  assert.match(request.url, /openai\/deployments\/repair-deployment\/chat\/completions/);
+  assert.equal(request.options.headers["api-key"], "azure-secret");
+  assert.equal(request.options.headers.Authorization, undefined);
 });
 
 test("runner policy combines settings and project config", () => {
@@ -118,4 +204,21 @@ test("settings secrets encrypt and mask", () => {
   assert.notEqual(encrypted.github.privateKey, "secret-key");
   assert.equal(decryptSettingsSecrets(encrypted).github.privateKey, "secret-key");
   assert.equal(maskSettingsSecrets(encrypted).github.privateKey, "********");
+});
+
+test("production rejects missing or placeholder encryption keys", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousKey = process.env.PATCHPROOF_SECRET_KEY;
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.PATCHPROOF_SECRET_KEY = "replace-with-random-32-byte-secret";
+    assert.throws(() => assertProductionSecretConfiguration(), /at least 32 non-placeholder/);
+    process.env.PATCHPROOF_SECRET_KEY = "a-secure-production-key-with-32-chars";
+    assert.doesNotThrow(() => assertProductionSecretConfiguration());
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousKey === undefined) delete process.env.PATCHPROOF_SECRET_KEY;
+    else process.env.PATCHPROOF_SECRET_KEY = previousKey;
+  }
 });

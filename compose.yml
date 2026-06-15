@@ -19,7 +19,7 @@ services:
       PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
       PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
       PATCHPROOF_RUN_MODE: queue
-      PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+      PATCHPROOF_SECRET_KEY: ${PATCHPROOF_SECRET_KEY:?Set PATCHPROOF_SECRET_KEY to at least 32 random characters}
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
@@ -56,7 +56,11 @@ services:
       PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
       PATCHPROOF_RUNNER_ISOLATION: docker
       PATCHPROOF_RUNNER_IMAGE: patchproof:0.4.0
-      PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+      PATCHPROOF_SECRET_KEY: ${PATCHPROOF_SECRET_KEY:?Set PATCHPROOF_SECRET_KEY to at least 32 random characters}
+      PATCHPROOF_MODEL_PROVIDER: ${PATCHPROOF_MODEL_PROVIDER:-disabled}
+      PATCHPROOF_MODEL_BASE_URL: ${PATCHPROOF_MODEL_BASE_URL:-}
+      PATCHPROOF_MODEL_API_KEY: ${PATCHPROOF_MODEL_API_KEY:-}
+      PATCHPROOF_MODEL_NAME: ${PATCHPROOF_MODEL_NAME:-}
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
@@ -70,6 +74,8 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${PATCHPROOF_DOCKER_GID:-0}"
     depends_on:
       postgres:
         condition: service_started

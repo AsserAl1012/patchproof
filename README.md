@@ -87,9 +87,9 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 - Proof mode: finite-domain bounded equivalence, not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner
-- Repair model: local repair-template adapter plus model-provider provenance hooks
+- Repair model: local repair templates, plus configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in queued SaaS runs
 
-See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY.md](docs/SECURITY.md) for the security model, and [docs/PUBLISHING.md](docs/PUBLISHING.md) for release steps.
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY.md](docs/SECURITY.md) for the security model, [docs/PUBLISHING.md](docs/PUBLISHING.md) for release steps, and [docs/LAUNCH_READINESS.md](docs/LAUNCH_READINESS.md) for the production gap analysis.
 
 ## Production Private SaaS
 

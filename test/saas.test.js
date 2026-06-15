@@ -8,6 +8,7 @@ import { createInputFromExample, examples } from "../engine.js";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 
 async function startSaasServer() {
   const dir = await mkdtemp(join(tmpdir(), "patchproof-saas-"));
@@ -115,6 +116,83 @@ test("SaaS flow bootstraps, creates project, creates run, and reads artifacts", 
     assert.ok(audit.json.auditEvents.some((event) => event.action === "run.completed"));
   } finally {
     server.close();
+  }
+});
+
+test("SaaS runner uses configured model provider candidates", async () => {
+  const modelServer = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                candidates: [
+                  {
+                    title: "Add the missing increment",
+                    rationale: "The function should return one more than its input.",
+                    source: "function increment(value) { return value + 1; }"
+                  }
+                ]
+              })
+            }
+          }
+        ]
+      })
+    );
+  });
+  await new Promise((resolve) => modelServer.listen(0, "127.0.0.1", resolve));
+  const modelPort = modelServer.address().port;
+  const { server, baseUrl } = await startSaasServer();
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const settings = await request(baseUrl, "/api/admin/settings", {
+      method: "PATCH",
+      token,
+      orgId,
+      body: {
+        modelProvider: {
+          provider: "local",
+          baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+          model: "local-repair-model",
+          maxCandidates: 2
+        }
+      }
+    });
+    assert.equal(settings.response.status, 200);
+
+    const projectRes = await request(baseUrl, "/api/projects", {
+      method: "POST",
+      token,
+      orgId,
+      body: { name: "Model Project", config: { repair: { minEvidenceScore: 0.75 } } }
+    });
+    const runRes = await request(baseUrl, `/api/projects/${projectRes.json.project.id}/runs`, {
+      method: "POST",
+      token,
+      orgId,
+      body: {
+        input: {
+          source: "function increment(value) { return value; }",
+          tests: [
+            { name: "zero", args: [0], expect: 1 },
+            { name: "four", args: [4], expect: 5 }
+          ],
+          bugReport: "increment should add one",
+          precondition: "Number.isFinite(args[0])",
+          mayChange: "true",
+          postcondition: "result === args[0] + 1"
+        }
+      }
+    });
+    const finished = await waitForRun(baseUrl, runRes.json.run.id, { token, orgId });
+    assert.equal(finished.json.run.status, "certified");
+    assert.equal(finished.json.certificate.certificate.selectedPatch.generator, "local");
+    assert.equal(finished.json.certificate.certificate.repair.suppliedCandidates, 1);
+  } finally {
+    server.close();
+    modelServer.close();
   }
 });
 

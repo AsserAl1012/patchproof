@@ -5,7 +5,9 @@ const DEFAULT_LIMITS = Object.freeze({
   maxTests: 100,
   maxDomainSize: 2400,
   maxCounterexamples: 8,
-  minMutationScore: 0.5
+  maxCandidates: 8,
+  minMutationScore: 0.5,
+  minEvidenceScore: 0
 });
 
 const FORBIDDEN_CODE_PATTERNS = [
@@ -144,7 +146,7 @@ const repairTemplates = [
 export function runPatchProof(input) {
   const startedAt = new Date().toISOString();
   const normalized = normalizeRunInput(input);
-  const tests = parseTests(normalized.testsText);
+  const tests = parseTests(normalized.testsText, normalized.limits);
   const oldProgram = compileFunction(normalized.source);
   const precondition = compilePredicate(normalized.preconditionText, true, "precondition");
   const mayChange = compilePredicate(normalized.mayChangeText, false, "may-change predicate");
@@ -152,12 +154,16 @@ export function runPatchProof(input) {
   const baseline = runTestSuite(oldProgram.fn, tests);
   const bugTests = baseline.tests.filter((test) => !test.pass);
   const passingTests = baseline.tests.filter((test) => test.pass);
-  const rawDomain = buildFiniteDomain(tests);
-  const domain = rawDomain.filter((args) => precondition(deepClone(args), undefined, null));
+  const domain = buildFiniteDomain(tests, normalized.limits, precondition);
   if (!domain.length) {
     throw new Error("The precondition excluded every generated input. Relax it or add broader tests.");
   }
-  const candidates = generateCandidates(normalized.source, normalized.bugReport);
+  const candidates = generateCandidates(
+    normalized.source,
+    normalized.bugReport,
+    normalized.candidatePatches,
+    normalized.limits
+  );
 
   const validated = candidates.map((candidate) =>
     validateCandidate({
@@ -250,32 +256,7 @@ export function verifyCertificate(certificate) {
     };
   }
 
-  compareField(mismatches, "runId", certificate.runId, reproduced.certificate.runId);
-  compareField(mismatches, "status", certificate.status, reproduced.certificate.status);
-  compareField(
-    mismatches,
-    "selectedPatch.id",
-    certificate.selectedPatch?.id,
-    reproduced.certificate.selectedPatch?.id
-  );
-  compareField(
-    mismatches,
-    "selectedPatch.accepted",
-    certificate.selectedPatch?.accepted,
-    reproduced.certificate.selectedPatch?.accepted
-  );
-  compareField(
-    mismatches,
-    "selectedPatch.evidenceScore",
-    certificate.selectedPatch?.evidenceScore,
-    reproduced.certificate.selectedPatch?.evidenceScore
-  );
-  compareField(
-    mismatches,
-    "behavioralEnvelope.finiteDomainSize",
-    certificate.behavioralEnvelope?.finiteDomainSize,
-    reproduced.certificate.behavioralEnvelope?.finiteDomainSize
-  );
+  compareCertificate(mismatches, certificate, reproduced.certificate);
 
   return {
     valid: mismatches.length === 0,
@@ -284,18 +265,13 @@ export function verifyCertificate(certificate) {
   };
 }
 
-function compareField(mismatches, field, expected, actual) {
-  if (!deepEqual(expected, actual)) {
-    mismatches.push(`${field} mismatch: expected ${stableStringify(expected)}, got ${stableStringify(actual)}.`);
-  }
-}
-
 function normalizeRunInput(input) {
   const source = String(input.source || "");
   const testsText = String(input.testsText || JSON.stringify(input.tests || []));
+  const limits = normalizeLimits(input.limits);
   if (!source.trim()) throw new Error("Source is required.");
-  if (source.length > DEFAULT_LIMITS.maxSourceChars) {
-    throw new Error(`Source exceeds ${DEFAULT_LIMITS.maxSourceChars} characters.`);
+  if (source.length > limits.maxSourceChars) {
+    throw new Error(`Source exceeds ${limits.maxSourceChars} characters.`);
   }
   return {
     source,
@@ -305,14 +281,115 @@ function normalizeRunInput(input) {
     mayChangeText: String(input.mayChangeText || input.mayChange || ""),
     postconditionText: String(input.postconditionText || input.postcondition || ""),
     executionMode: String(input.executionMode || "local-js-engine"),
-    limits: {
-      ...DEFAULT_LIMITS,
-      ...(input.limits || {})
-    }
+    candidatePatches: normalizeCandidatePatches(input.candidatePatches, limits),
+    modelProvenance: normalizeModelProvenance(input.modelProvenance),
+    limits
   };
 }
 
-function parseTests(text) {
+function compareCertificate(mismatches, expected, actual) {
+  compareCertificateValue(mismatches, "certificate", expected, actual);
+}
+
+function compareCertificateValue(mismatches, path, expected, actual) {
+  if (mismatches.length >= 25 || path === "certificate.generatedAt") return;
+  if (deepEqual(expected, actual)) return;
+
+  const expectedArray = Array.isArray(expected);
+  const actualArray = Array.isArray(actual);
+  if (expectedArray || actualArray) {
+    if (!expectedArray || !actualArray) {
+      mismatches.push(`${path} type mismatch.`);
+      return;
+    }
+    const length = Math.max(expected.length, actual.length);
+    for (let index = 0; index < length && mismatches.length < 25; index += 1) {
+      compareCertificateValue(mismatches, `${path}[${index}]`, expected[index], actual[index]);
+    }
+    return;
+  }
+
+  const expectedObject = expected && typeof expected === "object";
+  const actualObject = actual && typeof actual === "object";
+  if (expectedObject || actualObject) {
+    if (!expectedObject || !actualObject) {
+      mismatches.push(`${path} type mismatch.`);
+      return;
+    }
+    const keys = new Set([...Object.keys(expected), ...Object.keys(actual)]);
+    for (const key of [...keys].sort()) {
+      compareCertificateValue(mismatches, `${path}.${key}`, expected[key], actual[key]);
+      if (mismatches.length >= 25) break;
+    }
+    return;
+  }
+
+  mismatches.push(
+    `${path} mismatch: expected ${formatMismatchValue(expected)}, got ${formatMismatchValue(actual)}.`
+  );
+}
+
+function formatMismatchValue(value) {
+  const text = stableStringify(value);
+  if (text === undefined) return "undefined";
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
+
+function normalizeLimits(raw = {}) {
+  const limits = { ...DEFAULT_LIMITS, ...(raw || {}) };
+  for (const key of ["maxSourceChars", "maxTests", "maxDomainSize", "maxCounterexamples", "maxCandidates"]) {
+    const value = Number(limits[key]);
+    if (!Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer.`);
+    if (value > DEFAULT_LIMITS[key]) {
+      throw new Error(`${key} cannot exceed the verifier cap of ${DEFAULT_LIMITS[key]}.`);
+    }
+    limits[key] = value;
+  }
+  for (const key of ["minMutationScore", "minEvidenceScore"]) {
+    const value = Number(limits[key]);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`${key} must be between 0 and 1.`);
+    }
+    limits[key] = value;
+  }
+  return limits;
+}
+
+function normalizeCandidatePatches(value, limits) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("candidatePatches must be an array.");
+  return value.slice(0, limits.maxCandidates).map((candidate, index) => {
+    const item = typeof candidate === "string" ? { source: candidate } : candidate;
+    if (!item || typeof item !== "object") {
+      throw new Error(`Candidate patch ${index + 1} must be a source string or object.`);
+    }
+    const candidateSource = String(item.source || "");
+    if (!candidateSource.trim()) throw new Error(`Candidate patch ${index + 1} has no source.`);
+    if (candidateSource.length > limits.maxSourceChars) {
+      throw new Error(`Candidate patch ${index + 1} exceeds ${limits.maxSourceChars} characters.`);
+    }
+    return {
+      source: candidateSource,
+      title: String(item.title || `Generated candidate ${index + 1}`),
+      rationale: String(item.rationale || "Generated by the configured model provider."),
+      generator: String(item.generator || "model"),
+      provenance: normalizeModelProvenance(item.provenance)
+    };
+  });
+}
+
+function normalizeModelProvenance(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    provider: String(value.provider || ""),
+    model: String(value.model || ""),
+    promptHash: String(value.promptHash || ""),
+    candidateHash: String(value.candidateHash || ""),
+    promptStored: Boolean(value.promptStored)
+  };
+}
+
+function parseTests(text, limits) {
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -321,8 +398,8 @@ function parseTests(text) {
   }
   if (!Array.isArray(parsed)) throw new Error("Tests JSON must be an array.");
   if (parsed.length === 0) throw new Error("At least one executable test is required.");
-  if (parsed.length > DEFAULT_LIMITS.maxTests) {
-    throw new Error(`Too many tests. The local demo limit is ${DEFAULT_LIMITS.maxTests}.`);
+  if (parsed.length > limits.maxTests) {
+    throw new Error(`Too many tests. The configured limit is ${limits.maxTests}.`);
   }
   return parsed.map((test, index) => {
     if (!Array.isArray(test.args)) {
@@ -379,7 +456,7 @@ function assertSafeCode(code, label) {
   }
 }
 
-function generateCandidates(source, bugReport) {
+function generateCandidates(source, bugReport, suppliedCandidates, limits) {
   const keywords = String(bugReport || "")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
@@ -388,7 +465,29 @@ function generateCandidates(source, bugReport) {
   const candidates = [];
   const seen = new Set();
 
+  for (const supplied of suppliedCandidates) {
+    if (supplied.source === source || seen.has(supplied.source)) continue;
+    seen.add(supplied.source);
+    candidates.push({
+      id: `p${candidates.length + 1}`,
+      templateId: "model-generated",
+      title: supplied.title,
+      source: supplied.source,
+      diff: unifiedDiff(source, supplied.source),
+      risk: ["model-generated", "requires-bounded-validation"],
+      generator: supplied.generator,
+      provenance: supplied.provenance,
+      plannerTrace: {
+        score: 0,
+        matchedTerms: [],
+        rationale: supplied.rationale
+      }
+    });
+    if (candidates.length >= limits.maxCandidates) break;
+  }
+
   for (const template of repairTemplates) {
+    if (candidates.length >= limits.maxCandidates) break;
     const patched = template.apply(source);
     if (!patched || patched === source || seen.has(patched)) continue;
     seen.add(patched);
@@ -399,6 +498,8 @@ function generateCandidates(source, bugReport) {
       source: patched,
       diff: unifiedDiff(source, patched),
       risk: template.risk,
+      generator: "local-template",
+      provenance: null,
       plannerTrace: scoreTemplate(template, keywords)
     });
   }
@@ -411,6 +512,8 @@ function generateCandidates(source, bugReport) {
       source,
       diff: "No diff generated. Add a matching local repair template or edit the source.",
       risk: ["no-change"],
+      generator: "none",
+      provenance: null,
       plannerTrace: {
         score: 0,
         matchedTerms: [],
@@ -465,12 +568,29 @@ function validateCandidate({
     newProgram = compileFunction(candidate.source);
   } catch (error) {
     result.compileError = error.message;
+    result.rejectionReasons.push("Candidate did not compile as a safe named function.");
+    return result;
+  }
+  if (newProgram.name !== oldProgram.name) {
+    result.compileError = `Candidate declares ${newProgram.name}, expected ${oldProgram.name}.`;
+    result.rejectionReasons.push("Candidate changed the target function name.");
     return result;
   }
 
   result.explicitTests = runTestSuite(newProgram.fn, tests);
-  result.preservation = checkPreservation(oldProgram.fn, newProgram.fn, domain, mayChange);
-  result.postcondition = checkPostcondition(newProgram.fn, domain, postcondition);
+  result.preservation = checkPreservation(
+    oldProgram.fn,
+    newProgram.fn,
+    domain,
+    mayChange,
+    limits.maxCounterexamples
+  );
+  result.postcondition = checkPostcondition(
+    newProgram.fn,
+    domain,
+    postcondition,
+    limits.maxCounterexamples
+  );
   result.boundedProof = {
     status:
       result.preservation.counterexamples.length === 0 &&
@@ -482,7 +602,14 @@ function validateCandidate({
     mayChangeCases: result.preservation.skippedMayChange,
     postconditionCases: result.postcondition.checked
   };
-  result.mutation = mutationCheck(candidate.source, tests, domain, mayChange, postcondition);
+  result.mutation = mutationCheck(
+    candidate.source,
+    tests,
+    domain,
+    mayChange,
+    postcondition,
+    limits.maxCounterexamples
+  );
 
   const explicitPass = result.explicitTests.passCount === result.explicitTests.tests.length;
   const passByName = new Map(result.explicitTests.tests.map((test) => [test.name, test.pass]));
@@ -510,7 +637,6 @@ function validateCandidate({
   if (!mutationPass) {
     result.rejectionReasons.push(`Mutation score was below ${limits.minMutationScore}.`);
   }
-  result.accepted = result.rejectionReasons.length === 0;
   result.evidenceScore = computeEvidenceScore({
     fixedBug: result.fixedBug,
     explicitPass,
@@ -520,6 +646,12 @@ function validateCandidate({
     proofStatus: result.boundedProof.status,
     domainSize: domain.length
   });
+  if (result.evidenceScore < limits.minEvidenceScore) {
+    result.rejectionReasons.push(
+      `Evidence score was below ${limits.minEvidenceScore}.`
+    );
+  }
+  result.accepted = result.rejectionReasons.length === 0;
   return result;
 }
 
@@ -538,7 +670,7 @@ function runTestSuite(fn, tests) {
   };
 }
 
-function checkPreservation(oldFn, newFn, domain, mayChange) {
+function checkPreservation(oldFn, newFn, domain, mayChange, maxCounterexamples) {
   const counterexamples = [];
   let checked = 0;
   let skippedMayChange = 0;
@@ -559,14 +691,14 @@ function checkPreservation(oldFn, newFn, domain, mayChange) {
         old: oldObservation,
         next: newObservation
       });
-      if (counterexamples.length >= 5) break;
+      if (counterexamples.length >= maxCounterexamples) break;
     }
   }
 
   return { checked, skippedMayChange, counterexamples };
 }
 
-function checkPostcondition(fn, domain, postcondition) {
+function checkPostcondition(fn, domain, postcondition, maxCounterexamples) {
   const counterexamples = [];
   let checked = 0;
 
@@ -576,14 +708,14 @@ function checkPostcondition(fn, domain, postcondition) {
     checked += 1;
     if (!postcondition(deepClone(args), result, observation)) {
       counterexamples.push({ args, observation });
-      if (counterexamples.length >= 5) break;
+      if (counterexamples.length >= maxCounterexamples) break;
     }
   }
 
   return { checked, counterexamples };
 }
 
-function mutationCheck(source, tests, domain, mayChange, postcondition) {
+function mutationCheck(source, tests, domain, mayChange, postcondition, maxCounterexamples) {
   const mutants = generateMutants(source);
   if (!mutants.length) {
     return {
@@ -609,8 +741,14 @@ function mutationCheck(source, tests, domain, mayChange, postcondition) {
     }
 
     const explicit = runTestSuite(mutantFn, tests);
-    const preserve = checkPreservation(original, mutantFn, domain, mayChange);
-    const post = checkPostcondition(mutantFn, domain, postcondition);
+    const preserve = checkPreservation(
+      original,
+      mutantFn,
+      domain,
+      mayChange,
+      maxCounterexamples
+    );
+    const post = checkPostcondition(mutantFn, domain, postcondition, maxCounterexamples);
     const failed =
       explicit.failCount > 0 || preserve.counterexamples.length > 0 || post.counterexamples.length > 0;
     if (failed) {
@@ -657,11 +795,12 @@ function generateMutants(source) {
   return mutants.slice(0, 8);
 }
 
-function buildFiniteDomain(tests) {
+function buildFiniteDomain(tests, limits, precondition) {
   const arity = tests.reduce((max, test) => Math.max(max, test.args.length), 0);
   const valuesByIndex = Array.from({ length: arity }, (_, index) => valuesForIndex(tests, index));
-  const domain = cartesian(valuesByIndex).slice(0, DEFAULT_LIMITS.maxDomainSize);
-  return domain.map((args) => deepClone(args));
+  return cartesianFiltered(valuesByIndex, limits.maxDomainSize, (args) =>
+    precondition(deepClone(args), undefined, null)
+  );
 }
 
 function valuesForIndex(tests, index) {
@@ -704,12 +843,30 @@ function valuesForIndex(tests, index) {
   return values.slice(0, 18);
 }
 
-function cartesian(lists) {
-  if (!lists.length) return [[]];
-  return lists.reduce(
-    (acc, list) => acc.flatMap((prefix) => list.map((value) => [...prefix, value])),
-    [[]]
-  );
+function cartesianFiltered(lists, maxResults, include) {
+  if (!lists.length) return include([]) ? [[]] : [];
+  const results = [];
+  const current = [];
+  const maxExplored = Math.max(maxResults * 100, 10000);
+  let explored = 0;
+
+  function visit(index) {
+    if (results.length >= maxResults || explored >= maxExplored) return;
+    if (index === lists.length) {
+      explored += 1;
+      if (include(current)) results.push(deepClone(current));
+      return;
+    }
+    for (const value of lists[index]) {
+      current.push(value);
+      visit(index + 1);
+      current.pop();
+      if (results.length >= maxResults || explored >= maxExplored) break;
+    }
+  }
+
+  visit(0);
+  return results;
 }
 
 function pushUnique(values, candidate) {
@@ -826,6 +983,8 @@ function buildCertificate({
         precondition: input.preconditionText,
         mayChange: input.mayChangeText,
         postcondition: input.postconditionText,
+        candidatePatches: input.candidatePatches,
+        modelProvenance: input.modelProvenance,
         limits: input.limits
       })
     ),
@@ -849,12 +1008,14 @@ function buildCertificate({
           evidenceScore: Number(selected.evidenceScore.toFixed(3)),
           fixedBug: selected.fixedBug,
           riskTags: selected.risk,
+          generator: selected.generator,
+          provenance: selected.provenance,
           source: selected.source,
           diff: selected.diff,
           rejectionReasons: selected.rejectionReasons
         }
       : null,
-    validation: selected
+    validation: selected?.explicitTests
       ? {
           explicitTests: {
             passed: selected.explicitTests.passCount,
@@ -874,10 +1035,14 @@ function buildCertificate({
           boundedProof: selected.boundedProof,
           mutation: selected.mutation
         }
-      : null,
+      : selected
+        ? { compileError: selected.compileError }
+        : null,
     candidateSummary: candidates.map((candidate) => ({
       id: candidate.id,
       title: candidate.title,
+      generator: candidate.generator,
+      provenance: candidate.provenance,
       accepted: candidate.accepted,
       evidenceScore: Number(candidate.evidenceScore.toFixed(3)),
       compileError: candidate.compileError,
@@ -894,6 +1059,11 @@ function buildCertificate({
       correctnessClaim:
         "The selected patch fixes the explicit tests and preserves old observations for generated inputs outside the may-change predicate. The postcondition is checked across the generated finite domain."
     },
+    repair: {
+      modelProvenance: input.modelProvenance,
+      suppliedCandidates: input.candidatePatches.length,
+      evaluatedCandidates: candidates.length
+    },
     limits,
     residualRisk,
     replay: {
@@ -907,6 +1077,8 @@ function buildCertificate({
         mayChangeText: input.mayChangeText,
         postconditionText: input.postconditionText,
         executionMode: input.executionMode,
+        candidatePatches: input.candidatePatches,
+        modelProvenance: input.modelProvenance,
         limits: input.limits
       }
     }

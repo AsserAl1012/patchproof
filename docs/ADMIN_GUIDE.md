@@ -20,6 +20,8 @@ PATCHPROOF_ARTIFACT_DRIVER=s3
 PATCHPROOF_SECRET_KEY=<random secret for encrypted settings>
 ```
 
+`PATCHPROOF_SECRET_KEY` is mandatory in production, must be at least 32 characters, and must remain stable across restarts or encrypted provider/GitHub settings cannot be recovered.
+
 Run migrations explicitly with:
 
 ```powershell
@@ -58,6 +60,17 @@ Admin settings include:
 - runner CPU/memory/network policy;
 - artifact retention;
 - audit retention.
+
+Model generation can be configured through admin settings or runner environment variables:
+
+```text
+PATCHPROOF_MODEL_PROVIDER=openai-compatible|azure-openai|local|disabled
+PATCHPROOF_MODEL_BASE_URL=https://api.openai.com/v1
+PATCHPROOF_MODEL_API_KEY=...
+PATCHPROOF_MODEL_NAME=...
+```
+
+Candidate generation runs in the worker before validation. API keys are never sent into the isolated verifier.
 
 Production stores settings in Postgres. JSON storage remains available only for local/demo usage with `PATCHPROOF_STORE_DRIVER=json`.
 

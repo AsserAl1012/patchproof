@@ -11,6 +11,8 @@ npm run smoke
 docker compose config
 ```
 
+`docker compose config` requires `PATCHPROOF_SECRET_KEY` to be set to at least 32 random characters. Set `PATCHPROOF_DOCKER_GID` to the host Docker socket group ID when it is not `0`.
+
 2. Verify package contents:
 
 ```powershell
@@ -65,6 +67,5 @@ Avoid claiming:
 
 1. Multi-file repository repair adapters.
 2. Jest/Vitest/pytest integration.
-3. External LLM candidate adapter.
-4. gVisor/Firecracker runner hardening.
-5. Hosted version after sandbox review.
+3. gVisor/Firecracker runner hardening.
+4. Hosted version after sandbox review.

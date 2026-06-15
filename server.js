@@ -17,7 +17,7 @@ import {
   githubRepoFromWebhook,
   postGitHubComment
 } from "./saas/github-app.js";
-import { maskSettingsSecrets } from "./saas/secrets.js";
+import { assertProductionSecretConfiguration, maskSettingsSecrets } from "./saas/secrets.js";
 
 const root = resolve(process.cwd());
 const requestedPort = Number.parseInt(process.env.PORT || "4173", 10);
@@ -87,9 +87,11 @@ function safePath(urlPath, webRoot = root) {
 }
 
 export function createPatchProofServer(options = {}) {
+  assertProductionSecretConfiguration();
   const webRoot = resolve(options.root || root);
   const enableApi = options.enableApi !== false;
   const rateLimit = createRateLimiter(options.rateLimit);
+  const authRateLimit = createRateLimiter({ capacity: 10, refillPerMinute: 5 });
   const store = createSaasStore(options);
   const queue = options.queue || createJobQueue(options.queueOptions);
   const artifactStore = options.artifactStore || createArtifactStore(options.artifactOptions);
@@ -100,6 +102,14 @@ export function createPatchProofServer(options = {}) {
     const requestPath = (req.url || "").split("?")[0];
 
     if (requestPath.startsWith("/api/") && requestPath !== "/api/run") {
+      if (["/api/bootstrap", "/api/auth/login"].includes(requestPath) && req.method === "POST") {
+        const rate = authRateLimit(`${req.socket.remoteAddress || "unknown"}:${requestPath}`);
+        if (!rate.allowed) {
+          res.writeHead(429, { ...apiHeaders, "Retry-After": String(rate.retryAfterSeconds) });
+          res.end(JSON.stringify({ ok: false, error: { message: "Rate limit exceeded." } }));
+          return;
+        }
+      }
       try {
         await handleSaasApi({ req, res, requestPath, store, queue, artifactStore, inlineRuns, enableApi });
       } catch (error) {
@@ -254,10 +264,17 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
 
   if (requestPath === "/api/integrations/github/webhook" && method === "POST") {
     const secret = process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET || "";
+    if (!secret) {
+      writeJson(res, 503, {
+        ok: false,
+        error: { message: "GitHub webhook handling is disabled until PATCHPROOF_GITHUB_WEBHOOK_SECRET is set." }
+      });
+      return;
+    }
     const rawBody = readBody.raw;
     const verified = verifyGitHubSignature({ secret, body: rawBody, signature256: req.headers["x-hub-signature-256"] });
     const command = parsePatchProofCommand(body.comment?.body || body.issue?.body || "");
-    if (secret && !verified) {
+    if (!verified) {
       writeJson(res, 401, { ok: false, error: { message: "GitHub webhook signature verification failed." } });
       return;
     }

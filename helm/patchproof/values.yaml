@@ -22,13 +22,14 @@ env:
   PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
   PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
   PATCHPROOF_RUN_MODE: queue
-  PATCHPROOF_SECRET_KEY: replace-with-random-32-byte-secret
+  PATCHPROOF_SECRET_KEY: ""
 
 runner:
   enabled: true
   replicas: 1
   isolation: docker
   dockerSocketPath: /var/run/docker.sock
+  dockerSocketGid: 0
 
 resources:
   limits:

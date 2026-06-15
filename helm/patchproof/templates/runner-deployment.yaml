@@ -16,6 +16,9 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+        {{- if eq .Values.runner.isolation "docker" }}
+        supplementalGroups: [{{ .Values.runner.dockerSocketGid }}]
+        {{- end }}
       containers:
         - name: runner
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
