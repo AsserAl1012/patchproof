@@ -14,9 +14,9 @@ export async function runPatchProofInRunner(input, policy = {}, options = {}) {
   });
 }
 
-export function dockerArgsForPolicy(policy = {}) {
+export function dockerArgsForPolicy(policy = {}, language = "javascript") {
   const image = policy.image || process.env.PATCHPROOF_RUNNER_IMAGE || "patchproof:0.4.0";
-  return [
+  const base = [
     "run",
     "--rm",
     "-i",
@@ -35,17 +35,16 @@ export function dockerArgsForPolicy(policy = {}) {
     String(Number(policy.pidsLimit || 256)),
     "--workdir",
     "/app",
-    image,
-    "node",
-    "--permission",
-    "--allow-fs-read=/app",
-    "--max-old-space-size=128",
-    "sandbox/runner-child.js"
+    image
   ];
+  return language === "python"
+    ? [...base, "python3", "-I", "-S", "sandbox/python-runner.py"]
+    : [...base, "node", "--permission", "--allow-fs-read=/app", "--max-old-space-size=128", "sandbox/runner-child.js"];
 }
 
 function runPatchProofInDocker(input, policy = {}, options = {}) {
-  const args = dockerArgsForPolicy(policy);
+  const language = String(input?.language || "javascript").toLowerCase();
+  const args = dockerArgsForPolicy(policy, language);
   const timeoutMs = Number(policy.timeoutSeconds || 600) * 1000;
   const serialized = JSON.stringify(input || {});
   const maxOutputBytes = Number(options.maxOutputBytes || 1024 * 1024);
@@ -129,6 +128,13 @@ function runPatchProofInDocker(input, policy = {}, options = {}) {
         });
       }
     });
-    child.stdin.end(serialized);
+    child.stdin.end(
+      language === "python"
+        ? JSON.stringify({
+            operation: "run",
+            value: { ...input, executionMode: "isolated-python-docker-runner" }
+          })
+        : serialized
+    );
   });
 }

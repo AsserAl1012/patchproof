@@ -47,7 +47,7 @@ Status reviewed against source and configuration on 2026-06-15.
 ## P2 Product Completeness
 
 - Replace the simple source-token denylist with a stronger parser-based policy and hardened execution boundary.
-- Add TypeScript and Python engines only when execution and certificate claims actually support them; config labels alone are insufficient.
+- Broaden Python beyond standalone restricted functions only after repository checkout, dependency isolation, and real project test adapters exist. TypeScript still requires its own execution path.
 - Add richer generated domains, property-based generators, coverage feedback, and pluggable mutation engines.
 - Version the HTTP API and publish an OpenAPI specification.
 - Add billing/quotas only after job accounting and abuse controls are reliable.

@@ -1,6 +1,6 @@
 # PatchProof
 
-PatchProof is a private AI bug-fixing and patch-verification system. It proposes candidate JavaScript patches, executes tests, checks bounded behavioral preservation, runs postcondition checks, performs simple mutation analysis, and emits replayable validation certificates.
+PatchProof is a private AI bug-fixing and patch-verification system. It proposes candidate JavaScript and Python function patches, executes tests, checks bounded behavioral preservation, runs postcondition checks, performs simple mutation analysis, and emits replayable validation certificates.
 
 The current build supports both local quick-run mode and self-hosted private SaaS mode with login, organizations, projects, Postgres-backed runs, Redis queued jobs, Docker-capable runner workers, S3/MinIO artifact storage, audit logs, admin settings, GitHub App slash-command callbacks, and replayable certificates.
 
@@ -81,13 +81,16 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 
 ## Prototype Boundaries
 
-- Language: JavaScript functions declared as `function name(...) { ... }`
+- JavaScript: functions declared as `function name(...) { ... }`
+- Python: one named `def` function with JSON-compatible inputs/results; imports and unsafe builtins are rejected
 - Test format: JSON array with `name`, `args`, and `expect`
-- Envelope format: JavaScript expressions for precondition, may-change predicate, and postcondition
+- Envelope format: JavaScript expressions for JavaScript runs and Python expressions for Python runs
 - Proof mode: finite-domain bounded equivalence, not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner
-- Repair model: local repair templates, plus configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in queued SaaS runs
+- Repair model: language-specific local repair templates, plus configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in queued SaaS runs
+
+Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Browser-worker fallback remains JavaScript-only. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
 
 See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY.md](docs/SECURITY.md) for the security model, [docs/PUBLISHING.md](docs/PUBLISHING.md) for release steps, and [docs/LAUNCH_READINESS.md](docs/LAUNCH_READINESS.md) for the production gap analysis.
 

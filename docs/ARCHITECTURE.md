@@ -40,7 +40,7 @@ test/
 ## Validation Pipeline
 
 1. Parse executable tests.
-2. Compile the original function.
+2. Dispatch by language: JavaScript uses the Node verifier and Python uses the restricted Python process verifier.
 3. Run baseline tests and require observed failing evidence.
 4. Generate a finite input domain from test values and boundary expansions.
 5. Filter the generated domain through the precondition.
@@ -71,7 +71,7 @@ PatchProof treats candidate generation as untrusted. A patch is only accepted wh
 
 ## Model Integration
 
-`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Providers return:
+`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints for JavaScript or Python. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Providers return:
 
 ```json
 {

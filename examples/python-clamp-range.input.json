@@ -1,0 +1,14 @@
+{
+  "language": "python",
+  "source": "def clamp(value, min, max):\n    if value < min:\n        return min\n    if value > min:\n        return max\n    return value",
+  "tests": [
+    { "name": "below min", "args": [-5, 0, 10], "expect": 0 },
+    { "name": "above max", "args": [12, 0, 10], "expect": 10 },
+    { "name": "in range", "args": [6, 0, 10], "expect": 6 },
+    { "name": "upper boundary", "args": [10, 0, 10], "expect": 10 }
+  ],
+  "bugReport": "clamp returns max for in-range values above min; the upper guard should compare value to max.",
+  "precondition": "args[1] <= args[2]",
+  "mayChange": "args[0] > args[1] and args[0] < args[2]",
+  "postcondition": "result == min(max(args[0], args[1]), args[2])"
+}

@@ -109,7 +109,13 @@
           <div class="panel code-panel">
             <div class="panel-header">
               <span>Function Under Repair</span>
-              <span id="functionName" class="muted">not compiled</span>
+              <div>
+                <select id="languageInput" aria-label="Source language">
+                  <option value="javascript">JavaScript</option>
+                  <option value="python">Python</option>
+                </select>
+                <span id="functionName" class="muted">not compiled</span>
+              </div>
             </div>
             <textarea id="sourceInput" spellcheck="false"></textarea>
           </div>
@@ -125,7 +131,7 @@
           <div class="panel code-panel">
             <div class="panel-header">
               <span>Behavioral Envelope</span>
-              <span class="muted">JavaScript expressions</span>
+              <span class="muted">language expressions</span>
             </div>
             <label class="field-label" for="bugReportInput">Bug report</label>
             <textarea id="bugReportInput" class="small-editor" spellcheck="false"></textarea>

@@ -28,6 +28,7 @@ test("app binds saved-run controls", async () => {
 test("public package assets exist", async () => {
   const action = await readFile("action.yml", "utf8");
   const inputExample = await readFile("examples/clamp-range.input.json", "utf8");
+  const pythonExample = await readFile("examples/python-clamp-range.input.json", "utf8");
   const migration = await readFile("migrations/001_init.sql", "utf8");
   const productionMigration = await readFile("migrations/002_production_hardening.sql", "utf8");
   const chart = await readFile("helm/patchproof/Chart.yaml", "utf8");
@@ -35,6 +36,7 @@ test("public package assets exist", async () => {
   const config = await readFile("patchproof.yml", "utf8");
   assert.match(action, /PatchProof Verify/);
   assert.match(inputExample, /clamp/);
+  assert.match(pythonExample, /"language": "python"/);
   assert.match(migration, /CREATE TABLE organizations/);
   assert.match(productionMigration, /runner_heartbeats/);
   assert.match(chart, /name: patchproof/);

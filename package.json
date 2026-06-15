@@ -6,6 +6,7 @@
     "bug-fix",
     "verification",
     "javascript",
+    "python",
     "testing",
     "certificate"
   ],
@@ -23,7 +24,8 @@
     "patchproof": "bin/patchproof.js"
   },
   "exports": {
-    ".": "./engine.js",
+    ".": "./runtime.js",
+    "./engine": "./engine.js",
     "./server": "./server.js"
   },
   "files": [
@@ -40,7 +42,9 @@
     "index.html",
     "migrations",
     "patchproof.yml",
+    "python-examples.js",
     "README.md",
+    "runtime.js",
     "saas",
     "sandbox",
     "server.js",
@@ -62,7 +66,7 @@
     "runner": "node bin/patchproof.js runner",
     "migrate": "node bin/patchproof.js migrate",
     "test": "node --test",
-    "check": "node --check engine.js && node --check app.js && node --check worker.js && node --check server.js && node --check bin/patchproof.js && node --check saas/store.js && node --check saas/postgres-store.js && node --check saas/factory.js && node --check saas/migrations.js && node --check saas/artifacts.js && node --check saas/queue.js && node --check saas/runner-service.js && node --check saas/secrets.js && node --check saas/rbac.js && node --check saas/config.js && node --check saas/model-providers.js && node --check saas/runner-policy.js && node --check saas/github.js && node --check saas/github-app.js && node --check sandbox/hosted-runner.js && node --check sandbox/runner-child.js && node --check sandbox/docker-runner.js",
+    "check": "node --check engine.js && node --check runtime.js && python -I -S -c \"import ast,pathlib; ast.parse(pathlib.Path('sandbox/python-runner.py').read_text(encoding='utf-8'))\" && node --check app.js && node --check worker.js && node --check server.js && node --check bin/patchproof.js && node --check saas/store.js && node --check saas/postgres-store.js && node --check saas/factory.js && node --check saas/migrations.js && node --check saas/artifacts.js && node --check saas/queue.js && node --check saas/runner-service.js && node --check saas/secrets.js && node --check saas/rbac.js && node --check saas/config.js && node --check saas/model-providers.js && node --check saas/runner-policy.js && node --check saas/github.js && node --check saas/github-app.js && node --check sandbox/hosted-runner.js && node --check sandbox/runner-child.js && node --check sandbox/docker-runner.js",
     "smoke": "node scripts/smoke.js"
   },
   "dependencies": {

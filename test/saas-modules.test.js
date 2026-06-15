@@ -184,6 +184,9 @@ test("Docker runner arguments enforce production isolation", () => {
   assert.ok(args.includes("--read-only"));
   assert.ok(args.includes("--pids-limit"));
   assert.ok(args.includes("patchproof:test"));
+  const pythonArgs = dockerArgsForPolicy({ image: "patchproof:test" }, "python");
+  assert.ok(pythonArgs.includes("python3"));
+  assert.ok(pythonArgs.includes("sandbox/python-runner.py"));
 });
 
 test("GitHub comment builders include run evidence", () => {

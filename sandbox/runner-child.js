@@ -1,5 +1,5 @@
 import { stdin, stdout } from "node:process";
-import { runPatchProof } from "../engine.js";
+import { runPatchProof } from "../runtime.js";
 
 let input = "";
 

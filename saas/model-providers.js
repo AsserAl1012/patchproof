@@ -57,13 +57,14 @@ export function modelProvenance(settings, prompt = "", candidate = "") {
 }
 
 export function buildRepairPrompt(input = {}) {
+  const language = String(input.language || "javascript").toLowerCase();
   const tests = input.testsText || JSON.stringify(input.tests || [], null, 2);
   return [
-    "You generate small JavaScript bug-fix candidates for bounded verification.",
+    `You generate small ${language} bug-fix candidates for bounded verification.`,
     "Return only JSON with this shape:",
     '{"candidates":[{"title":"short title","rationale":"why this fixes the bug","source":"complete named function source"}]}',
-    "Do not add imports, dependencies, network access, filesystem access, eval, or dynamic code generation.",
-    "Each source value must contain the complete replacement for the submitted named function.",
+    "Do not add imports, dependencies, network access, filesystem access, eval, exec, or dynamic code generation.",
+    `Each source value must contain the complete replacement for the submitted named ${language} function.`,
     "Prefer the smallest behaviorally focused change and provide distinct candidates.",
     "",
     `Bug report:\n${String(input.bugReport || "")}`,
@@ -184,7 +185,7 @@ function parseCandidateContent(content) {
   const trimmed = String(content || "").trim();
   if (!trimmed) return [];
   const unfenced = trimmed
-    .replace(/^```(?:json|javascript|js)?\s*/i, "")
+    .replace(/^```(?:json|javascript|js|python|py)?\s*/i, "")
     .replace(/\s*```$/, "")
     .trim();
   const parsed = parseJsonCandidate(unfenced);
@@ -192,7 +193,7 @@ function parseCandidateContent(content) {
     const values = Array.isArray(parsed) ? parsed : parsed.candidates || [parsed];
     return values.filter((value) => value && typeof value === "object");
   }
-  if (/function\s+[A-Za-z_$][\w$]*\s*\(/.test(unfenced)) {
+  if (/function\s+[A-Za-z_$][\w$]*\s*\(/.test(unfenced) || /^def\s+[A-Za-z_]\w*\s*\(/m.test(unfenced)) {
     return [{ source: unfenced }];
   }
   return [];

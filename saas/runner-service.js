@@ -178,9 +178,10 @@ export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DE
 }
 
 function resolveRunInput(detail) {
-  if (detail.run.input?.source) return detail.run.input;
+  const language = detail.run.input?.language || detail.project?.config?.project?.language || "javascript";
+  if (detail.run.input?.source) return { ...detail.run.input, language };
   const configInput = detail.project?.config?.repairInput || detail.project?.config?.github?.repairInput;
-  if (configInput?.source) return configInput;
+  if (configInput?.source) return { ...configInput, language: configInput.language || language };
   return createInputFromExample(examples[0]);
 }
 

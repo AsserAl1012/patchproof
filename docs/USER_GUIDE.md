@@ -1,5 +1,24 @@
 # PatchProof User Guide
 
+## Language Support
+
+PatchProof supports standalone named JavaScript and Python functions.
+
+Python input uses:
+
+```json
+{
+  "language": "python",
+  "source": "def increment(value):\n    return value",
+  "tests": [{ "name": "increments", "args": [1], "expect": 2 }],
+  "precondition": "isinstance(args[0], int)",
+  "mayChange": "True",
+  "postcondition": "result == args[0] + 1"
+}
+```
+
+Python support currently accepts exactly one named function, JSON-compatible arguments and results, and Python expressions for the behavioral envelope. Imports, decorators, classes, filesystem/network APIs, and unsafe dynamic builtins are rejected. Use the CLI or server; browser-only fallback cannot execute Python.
+
 ## Purpose
 
 PatchProof is a private bug-repair and verification workbench. It does not merely show a code suggestion. It shows candidate patches and a certificate explaining what was tested, what behavior was preserved, and what remains uncertain.

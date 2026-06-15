@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { PATCHPROOF_VERSION } from "../engine.js";
 import {
-  PATCHPROOF_VERSION,
   createInputFromExample,
   examples,
   runPatchProof,
   verifyCertificate
-} from "../engine.js";
+} from "../runtime.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "help";
@@ -129,6 +129,7 @@ async function inputFromFile(filePath) {
   if (!filePath) throw new Error("--input requires a file path.");
   const raw = JSON.parse(await readFile(filePath, "utf8"));
   return {
+    language: raw.language || "javascript",
     source: raw.source,
     testsText: raw.testsText || JSON.stringify(raw.tests || [], null, 2),
     bugReport: raw.bugReport || "",
@@ -168,6 +169,7 @@ Usage:
 
 Input file shape:
   {
+    "language": "javascript | python",
     "source": "function ...",
     "tests": [{ "name": "...", "args": [], "expect": null }],
     "bugReport": "...",

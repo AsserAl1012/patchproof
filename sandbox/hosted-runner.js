@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, "..");
 const childPath = resolve(here, "runner-child.js");
+const pythonChildPath = resolve(here, "python-runner.py");
 
 export const HOSTED_LIMITS = Object.freeze({
   timeoutMs: 8000,
@@ -29,14 +30,22 @@ export function runPatchProofIsolated(input, options = {}) {
   }
 
   return new Promise((resolveResult) => {
+    const language = String(input?.language || "javascript").toLowerCase();
+    const python = language === "python";
+    const executable = python
+      ? process.env.PATCHPROOF_PYTHON_BIN || (process.platform === "win32" ? "python" : "python3")
+      : process.execPath;
+    const args = python
+      ? ["-I", "-S", pythonChildPath]
+      : [
+          "--permission",
+          `--allow-fs-read=${projectRoot}`,
+          "--max-old-space-size=128",
+          childPath
+        ];
     const child = spawn(
-      process.execPath,
-      [
-        "--permission",
-        `--allow-fs-read=${projectRoot}`,
-        "--max-old-space-size=128",
-        childPath
-      ],
+      executable,
+      args,
       {
         cwd: projectRoot,
         stdio: ["pipe", "pipe", "pipe"],
@@ -130,6 +139,13 @@ export function runPatchProofIsolated(input, options = {}) {
       }
     });
 
-    child.stdin.end(serialized);
+    child.stdin.end(
+      python
+        ? JSON.stringify({
+            operation: "run",
+            value: { ...input, executionMode: "isolated-python-process-runner" }
+          })
+        : serialized
+    );
   });
 }

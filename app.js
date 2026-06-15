@@ -1,7 +1,11 @@
 import { examples, runPatchProof } from "./engine.js";
+import { pythonExamples } from "./python-examples.js";
+
+const allExamples = [...examples, ...pythonExamples];
 
 const elements = {
   scenarioList: document.querySelector("#scenarioList"),
+  languageInput: document.querySelector("#languageInput"),
   sourceInput: document.querySelector("#sourceInput"),
   testsInput: document.querySelector("#testsInput"),
   bugReportInput: document.querySelector("#bugReportInput"),
@@ -54,7 +58,7 @@ const elements = {
 const RUN_HISTORY_KEY = "patchproof.runHistory.v1";
 const AUTH_KEY = "patchproof.auth.v1";
 const MAX_SAVED_RUNS = 20;
-let activeExample = examples[0];
+let activeExample = allExamples[0];
 let lastResult = null;
 let selectedCandidateId = null;
 let auth = readAuth();
@@ -72,7 +76,7 @@ function init() {
 
 function renderScenarios() {
   elements.scenarioList.innerHTML = "";
-  for (const example of examples) {
+  for (const example of allExamples) {
     const button = document.createElement("button");
     button.className = `scenario-item${example.id === activeExample.id ? " active" : ""}`;
     button.innerHTML = `<strong>${escapeHtml(example.title)}</strong><span>${escapeHtml(example.subtitle)}</span>`;
@@ -86,6 +90,7 @@ function renderScenarios() {
 }
 
 function loadExample(example) {
+  elements.languageInput.value = example.language || "javascript";
   elements.sourceInput.value = example.source;
   elements.testsInput.value = JSON.stringify(example.tests, null, 2);
   elements.bugReportInput.value = example.bugReport;
@@ -134,6 +139,7 @@ function runEngine() {
   elements.runButton.disabled = true;
 
   runVerifier({
+    language: elements.languageInput.value,
     source: elements.sourceInput.value,
     testsText: elements.testsInput.value,
     bugReport: elements.bugReportInput.value,
@@ -184,6 +190,9 @@ async function runViaApi(payload) {
 }
 
 function runInWorker(payload) {
+  if (payload.language === "python") {
+    return Promise.reject(new Error("Python verification requires the PatchProof server or CLI; browser-worker fallback supports JavaScript only."));
+  }
   if (!window.Worker) {
     return Promise.resolve(runPatchProof(payload));
   }
@@ -363,6 +372,7 @@ function loadCertificate(certificate) {
   if (certificate.replay?.input) {
     const input = certificate.replay.input;
     elements.sourceInput.value = input.source || "";
+    elements.languageInput.value = input.language || certificate.target?.language || "javascript";
     elements.testsInput.value = input.testsText || "[]";
     elements.bugReportInput.value = input.bugReport || "";
     elements.preconditionInput.value = input.preconditionText || "";
@@ -574,6 +584,7 @@ async function runProject() {
       body: {
         trigger: "manual-dashboard",
         input: {
+          language: elements.languageInput.value,
           source: elements.sourceInput.value,
           testsText: elements.testsInput.value,
           bugReport: elements.bugReportInput.value,

@@ -5,13 +5,13 @@ ENV HOST=0.0.0.0
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends docker.io ca-certificates \
+  && apt-get install -y --no-install-recommends docker.io ca-certificates python3-minimal \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
-COPY app.js engine.js index.html server.js styles.css worker.js ./
+COPY app.js engine.js runtime.js python-examples.js index.html server.js styles.css worker.js ./
 COPY bin ./bin
 COPY docs ./docs
 COPY examples ./examples

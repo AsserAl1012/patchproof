@@ -8,6 +8,7 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - Worker execution has an eight-second UI timeout.
 - Local/demo API validation runs in a separate Node process.
 - The local/demo runner uses Node permissions with no filesystem write permission and no child-process or worker permission.
+- Python runs use a separate isolated process, Python isolated mode, an AST policy, restricted builtins, no imports, and the same request/output/time limits. Docker isolation remains the production boundary because Python does not provide Node-style permission flags.
 - Production project runs are queued and handled by a runner service.
 - Docker runner mode uses one container per job, no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after completion.
 - Certificates, logs, diffs, and runner metadata are stored as hash-checked artifacts.

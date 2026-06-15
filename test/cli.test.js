@@ -54,8 +54,12 @@ test("CLI runs from an input file", async () => {
 test("certificate CLI works from an action checkout without installed dependencies", async () => {
   const dir = await mkdtemp(join(tmpdir(), "patchproof-action-"));
   await mkdir(join(dir, "bin"), { recursive: true });
+  await mkdir(join(dir, "sandbox"), { recursive: true });
   await Promise.all([
     copyFile("engine.js", join(dir, "engine.js")),
+    copyFile("runtime.js", join(dir, "runtime.js")),
+    copyFile("python-examples.js", join(dir, "python-examples.js")),
+    copyFile("sandbox/python-runner.py", join(dir, "sandbox", "python-runner.py")),
     copyFile("package.json", join(dir, "package.json")),
     copyFile("bin/patchproof.js", join(dir, "bin", "patchproof.js"))
   ]);
@@ -72,4 +76,16 @@ test("certificate CLI works from an action checkout without installed dependenci
   });
   assert.equal(verify.status, 0, verify.stderr || verify.stdout);
   assert.match(verify.stdout, /verified/);
+});
+
+test("CLI runs Python from an input file", () => {
+  const result = spawnSync(
+    node,
+    ["bin/patchproof.js", "run", "--input", "examples/python-clamp-range.input.json", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const certificate = JSON.parse(result.stdout);
+  assert.equal(certificate.status, "certified");
+  assert.equal(certificate.target.language, "python");
 });

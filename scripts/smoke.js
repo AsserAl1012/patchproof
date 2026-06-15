@@ -1,9 +1,10 @@
-import { examples, runPatchProof } from "../engine.js";
+import { examples, runPatchProof } from "../runtime.js";
 import { createPatchProofServer } from "../server.js";
 
 function runExample(example) {
   return runPatchProof({
     source: example.source,
+    language: example.language || "javascript",
     testsText: JSON.stringify(example.tests),
     bugReport: example.bugReport,
     preconditionText: example.precondition,
