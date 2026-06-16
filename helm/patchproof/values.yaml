@@ -1,6 +1,6 @@
 image:
   repository: patchproof
-  tag: "0.4.0"
+  tag: "0.4.1"
   pullPolicy: IfNotPresent
 
 service:

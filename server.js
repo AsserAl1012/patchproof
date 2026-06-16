@@ -168,7 +168,7 @@ export function createPatchProofServer(options = {}) {
     }
 
     if (requestPath === "/healthz") {
-      const body = JSON.stringify({ ok: true, service: "patchproof", version: "0.4.0" });
+      const body = JSON.stringify({ ok: true, service: "patchproof", version: "0.4.1" });
       res.writeHead(200, {
         ...securityHeaders,
         "Content-Type": "application/json; charset=utf-8",

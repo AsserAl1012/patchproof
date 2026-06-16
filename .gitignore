@@ -11,3 +11,4 @@ patchproof-run-history.json
 Thumbs.db
 __pycache__/
 *.pyc
+.npmrc

@@ -8,7 +8,7 @@ import re
 import sys
 
 CERTIFICATE_SCHEMA = "patchproof.certificate.v2"
-PATCHPROOF_VERSION = "0.4.0"
+PATCHPROOF_VERSION = "0.4.1"
 DEFAULT_LIMITS = {
     "maxSourceChars": 12000,
     "maxTests": 100,

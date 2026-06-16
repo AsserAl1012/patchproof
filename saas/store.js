@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     memoryMb: 2048,
     cpus: 2,
     network: "disabled",
-    image: "patchproof:0.4.0"
+    image: "patchproof:0.4.1"
   },
   retention: {
     artifactDays: 30,

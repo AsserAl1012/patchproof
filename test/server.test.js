@@ -37,7 +37,7 @@ test("serves health endpoint", async () => {
     const response = await fetch(`${baseUrl}/healthz`);
     const body = await response.json();
     assert.equal(response.status, 200);
-    assert.deepEqual(body, { ok: true, service: "patchproof", version: "0.4.0" });
+    assert.deepEqual(body, { ok: true, service: "patchproof", version: "0.4.1" });
   } finally {
     server.close();
   }

@@ -42,11 +42,11 @@ The release workflow publishes with npm provenance when a version tag is pushed.
 5. Tag a release:
 
 ```powershell
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
-The tag must match `package.json` exactly. For `0.4.0`, use `v0.4.0`.
+The tag must match `package.json` exactly. For `0.4.1`, use `v0.4.1`.
 
 6. Manual publish fallback when the workflow is not used:
 
@@ -64,7 +64,7 @@ npx patchproof version
 Use the action with an immutable version tag:
 
 ```yaml
-- uses: AsserAl1012/patchproof@v0.4.0
+- uses: AsserAl1012/patchproof@v0.4.1
   with:
     certificate: certificate.json
 ```

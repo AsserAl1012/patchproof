@@ -7,7 +7,7 @@ export function buildRunnerPolicy({ orgId, projectId, runId, settings = {}, conf
     orgId,
     projectId,
     runId,
-    image: process.env.PATCHPROOF_RUNNER_IMAGE || runner.image || "patchproof:0.4.0",
+    image: process.env.PATCHPROOF_RUNNER_IMAGE || runner.image || "patchproof:0.4.1",
     network: runner.network || "disabled",
     timeoutSeconds: Number(runner.timeoutSeconds || 600),
     memoryMb: Number(runner.memoryMb || 2048),
