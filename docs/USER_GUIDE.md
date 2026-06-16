@@ -50,6 +50,8 @@ CLI usage:
 ```powershell
 node bin/patchproof.js scenarios
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
+node bin/patchproof.js targets --repo path/to/project
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
@@ -195,6 +197,71 @@ Selected p1 with evidence score 0.93.
 7. Click `Run PatchProof`.
 8. Inspect the certificate before applying the patch.
 
+## Repository Targets
+
+PatchProof can map files from a repository checkout into the same function-level input format used by the CLI and web app. This first repository adapter reads a source file, extracts one named JavaScript or Python function, reads a JSON PatchProof test file, and builds a verifier input. It does not run Jest, Vitest, or pytest yet.
+
+Create `patchproof.yml` in the repository you want to test:
+
+```yaml
+version: 1
+project:
+  language: javascript
+  allowedPaths:
+    - src/**
+    - tests/**
+  forbiddenPaths:
+    - .env
+    - secrets/**
+targets:
+  clamp-range:
+    source: src/clamp.js
+    function: clamp
+    tests: tests/clamp.patchproof.json
+    bugReport: Upper guard compares value to min instead of max.
+    precondition: args[1] <= args[2]
+    mayChange: args[0] > args[1] && args[0] < args[2]
+    postcondition: result === Math.min(Math.max(args[0], args[1]), args[2])
+```
+
+The test file is a JSON array:
+
+```json
+[
+  { "name": "below min", "args": [-5, 0, 10], "expect": 0 },
+  { "name": "above max", "args": [12, 0, 10], "expect": 10 },
+  { "name": "in range", "args": [6, 0, 10], "expect": 6 }
+]
+```
+
+List configured targets:
+
+```powershell
+node bin/patchproof.js targets --repo path/to/project
+```
+
+Run one target:
+
+```powershell
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
+```
+
+For Python targets, set `project.language: python` or `language: python` on the target and use Python expressions in the envelope:
+
+```yaml
+targets:
+  clamp-range:
+    language: python
+    source: src/ranges.py
+    function: clamp
+    tests: tests/clamp.patchproof.json
+    precondition: args[1] <= args[2]
+    mayChange: args[0] > args[1] and args[0] < args[2]
+    postcondition: result == min(max(args[0], args[1]), args[2])
+```
+
+Path safety is enforced with `allowedPaths` and `forbiddenPaths`. Source and test paths must stay inside the repository root.
+
 ## What Makes A Strong Certificate
 
 A strong certificate usually has:
@@ -223,8 +290,7 @@ PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, 
 
 ## Current Limitations
 
-- No real external LLM is wired in yet.
-- No multi-file project repair yet.
+- No multi-file project repair yet; repository targets still extract one named function.
 - No symbolic solver yet; the bounded proof is finite-domain differential validation.
 - Browser quick-run history is local-only; project runs are persisted by the SaaS backend.
 - No support for async functions, network, filesystem, DOM, or database behavior.

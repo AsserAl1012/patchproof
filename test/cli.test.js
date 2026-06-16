@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -88,4 +88,51 @@ test("CLI runs Python from an input file", () => {
   const certificate = JSON.parse(result.stdout);
   assert.equal(certificate.status, "certified");
   assert.equal(certificate.target.language, "python");
+});
+
+test("CLI lists and runs repository targets", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-cli-"));
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "src", "clamp.js"), `function clamp(value, min, max) {
+  if (value < min) return min;
+  if (value > min) return max;
+  return value;
+}
+`, "utf8");
+  await writeFile(join(repo, "tests", "clamp.patchproof.json"), JSON.stringify([
+    { name: "below min", args: [-5, 0, 10], expect: 0 },
+    { name: "above max", args: [12, 0, 10], expect: 10 },
+    { name: "in range", args: [6, 0, 10], expect: 6 }
+  ], null, 2), "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: javascript
+  allowedPaths:
+    - src/**
+    - tests/**
+targets:
+  clamp-range:
+    source: src/clamp.js
+    function: clamp
+    tests: tests/clamp.patchproof.json
+    bugReport: Upper guard compares value to min instead of max.
+    precondition: args[1] <= args[2]
+    mayChange: args[0] > args[1] && args[0] < args[2]
+    postcondition: result === Math.min(Math.max(args[0], args[1]), args[2])
+`, "utf8");
+
+  const list = spawnSync(node, ["bin/patchproof.js", "targets", "--repo", repo], {
+    encoding: "utf8"
+  });
+  assert.equal(list.status, 0, list.stderr || list.stdout);
+  assert.match(list.stdout, /clamp-range/);
+
+  const run = spawnSync(node, ["bin/patchproof.js", "run", "--repo", repo, "--target", "clamp-range", "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const certificate = JSON.parse(run.stdout);
+  assert.equal(certificate.status, "certified");
 });

@@ -39,6 +39,8 @@ npm run runner
 node bin/patchproof.js scenarios
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
 node bin/patchproof.js run --input examples/clamp-range.input.json --out certificate.json
+node bin/patchproof.js targets --repo path/to/project
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
@@ -51,6 +53,8 @@ After publishing to npm, the same commands become:
 npx patchproof scenarios
 npx patchproof run --scenario clamp-range --out certificate.json
 npx patchproof run --input examples/clamp-range.input.json --out certificate.json
+npx patchproof targets --repo path/to/project
+npx patchproof run --repo path/to/project --target clamp-range --out certificate.json
 npx patchproof verify certificate.json
 npx patchproof serve
 ```
@@ -85,6 +89,7 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 - Python: one named `def` function with JSON-compatible inputs/results; imports and unsafe builtins are rejected
 - Test format: JSON array with `name`, `args`, and `expect`
 - Envelope format: JavaScript expressions for JavaScript runs and Python expressions for Python runs
+- Repository adapter: `patchproof.yml` can map source/test files into function-level PatchProof targets
 - Proof mode: finite-domain bounded equivalence, not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner

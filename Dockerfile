@@ -11,7 +11,7 @@ RUN apt-get update \
 COPY package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
-COPY app.js engine.js runtime.js python-examples.js index.html server.js styles.css worker.js ./
+COPY app.js engine.js runtime.js repository-adapter.js python-examples.js index.html server.js styles.css worker.js ./
 COPY bin ./bin
 COPY docs ./docs
 COPY examples ./examples

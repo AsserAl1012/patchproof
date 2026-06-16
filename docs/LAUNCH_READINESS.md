@@ -33,7 +33,7 @@ Status reviewed against source and configuration on 2026-06-15.
 - Test backup and restore procedures with real Postgres and object storage data.
 - Add structured logs, request IDs, traces, model latency/error metrics, and alerting rules.
 - Validate provider-specific token fields and support the OpenAI Responses API where required.
-- Add repository checkout/test adapters before claiming whole-repository repair. The current verifier remains named-function JavaScript only.
+- Expand repository adapters into real checkout/test adapters before claiming whole-repository repair. The current adapter maps configured source/test files into named-function JavaScript or Python verifier inputs.
 - Change GitHub patch application from committing a `.patch` artifact to applying reviewed file changes when repository repair exists.
 
 ## P1 Release Engineering
@@ -54,4 +54,4 @@ Status reviewed against source and configuration on 2026-06-15.
 
 ## Current Publish Position
 
-The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and named-function JavaScript limitations. A public multi-tenant SaaS should not launch until the P0 isolation, queue reliability, integration testing, secret management, certificate trust, and security-review items are complete.
+The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and named-function JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation, queue reliability, integration testing, secret management, certificate trust, and security-review items are complete.

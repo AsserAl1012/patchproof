@@ -15,6 +15,10 @@ worker.js
 bin/patchproof.js
   CLI for serving the app, running scenarios, migrating Postgres, running workers, and replaying certificates
 
+repository-adapter.js
+  Reads patchproof.yml repository targets, extracts one named source function,
+  reads JSON PatchProof tests, and builds verifier inputs
+
 saas/
   Postgres/JSON store adapters, migrations, Redis/memory queues, artifact storage,
   RBAC, config parser, model provider metadata, runner service, GitHub App utilities
@@ -39,13 +43,14 @@ test/
 
 ## Validation Pipeline
 
-1. Parse executable tests.
-2. Dispatch by language: JavaScript uses the Node verifier and Python uses the restricted Python process verifier.
-3. Run baseline tests and require observed failing evidence.
-4. Generate a finite input domain from test values and boundary expansions.
-5. Filter the generated domain through the precondition.
-6. Generate candidate patches through a configured model provider before sandbox execution, then add local repair-template candidates when capacity remains.
-7. For each candidate:
+1. Optionally build input from a repository target: source file plus JSON PatchProof tests.
+2. Parse executable tests.
+3. Dispatch by language: JavaScript uses the Node verifier and Python uses the restricted Python process verifier.
+4. Run baseline tests and require observed failing evidence.
+5. Generate a finite input domain from test values and boundary expansions.
+6. Filter the generated domain through the precondition.
+7. Generate candidate patches through a configured model provider before sandbox execution, then add local repair-template candidates when capacity remains.
+8. For each candidate:
    - compile candidate;
    - run explicit tests;
    - verify originally failing tests now pass;
@@ -53,8 +58,8 @@ test/
    - check postcondition across the finite domain;
    - run simple source mutation checks;
    - compute evidence score and rejection reasons.
-8. Select the highest-scoring accepted patch, or the highest-scoring rejected candidate if none certify.
-9. Emit replayable certificate.
+9. Select the highest-scoring accepted patch, or the highest-scoring rejected candidate if none certify.
+10. Emit replayable certificate.
 
 ## Private SaaS Runtime
 

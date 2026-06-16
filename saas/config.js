@@ -23,7 +23,8 @@ const DEFAULT_CONFIG = Object.freeze({
     endpointEnv: "PATCHPROOF_MODEL_BASE_URL",
     apiKeyEnv: "PATCHPROOF_MODEL_API_KEY",
     model: "configurable-by-admin"
-  }
+  },
+  targets: {}
 });
 
 export function defaultProjectConfig() {
@@ -46,6 +47,18 @@ export function validatePatchproofConfig(config) {
   }
   if (config.repair.minEvidenceScore < 0 || config.repair.minEvidenceScore > 1) {
     throw new Error("repair.minEvidenceScore must be between 0 and 1.");
+  }
+  if (!config.targets || typeof config.targets !== "object" || Array.isArray(config.targets)) {
+    throw new Error("targets must be an object keyed by target id.");
+  }
+  for (const [id, target] of Object.entries(config.targets)) {
+    if (!/^[A-Za-z0-9_.-]+$/.test(id)) throw new Error(`Invalid target id '${id}'.`);
+    if (!target || typeof target !== "object" || Array.isArray(target)) {
+      throw new Error(`target '${id}' must be an object.`);
+    }
+    if (target.language && !["javascript", "typescript", "python"].includes(target.language)) {
+      throw new Error(`target '${id}' language must be javascript, typescript, or python.`);
+    }
   }
   return config;
 }

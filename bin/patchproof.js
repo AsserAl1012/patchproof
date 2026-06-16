@@ -30,6 +30,8 @@ try {
     for (const example of examples) {
       console.log(`${example.id}\t${example.title}\t${example.subtitle}`);
     }
+  } else if (command === "targets") {
+    await targetsCommand(args.slice(1));
   } else if (command === "run") {
     await runCommand(args.slice(1));
   } else if (command === "verify") {
@@ -46,14 +48,22 @@ async function runCommand(runArgs) {
   const jsonMode = runArgs.includes("--json");
   const scenarioId = readOption(runArgs, "--scenario");
   const inputPath = readOption(runArgs, "--input");
+  const targetId = readOption(runArgs, "--target");
+  const repoRoot = readOption(runArgs, "--repo");
+  const configPath = readOption(runArgs, "--config");
   const outPath = readOption(runArgs, "--out");
+  const modes = [scenarioId, inputPath, targetId].filter(Boolean);
 
-  if (!scenarioId && !inputPath) {
-    throw new Error("run requires --scenario <id> or --input <file.json>.");
+  if (modes.length !== 1) {
+    throw new Error("run requires exactly one of --scenario <id>, --input <file.json>, or --target <id>.");
   }
 
-  const input = scenarioId ? inputForScenario(scenarioId) : await inputFromFile(inputPath);
-  input.executionMode = "node-cli";
+  const input = scenarioId
+    ? inputForScenario(scenarioId)
+    : inputPath
+      ? await inputFromFile(inputPath)
+      : await inputFromRepositoryTarget({ repoRoot, configPath, targetId });
+  input.executionMode = targetId ? "repository-adapter-cli" : "node-cli";
   const result = runPatchProof(input);
   const certificateJson = JSON.stringify(result.certificate, null, 2);
 
@@ -73,6 +83,26 @@ async function runCommand(runArgs) {
 
   if (result.certificate.status !== "certified") {
     process.exitCode = 2;
+  }
+}
+
+async function inputFromRepositoryTarget(options) {
+  const { createInputFromRepositoryTarget } = await import("../repository-adapter.js");
+  return createInputFromRepositoryTarget(options);
+}
+
+async function targetsCommand(targetArgs) {
+  const repoRoot = readOption(targetArgs, "--repo");
+  const configPath = readOption(targetArgs, "--config");
+  const jsonMode = targetArgs.includes("--json");
+  const { listRepositoryTargets } = await import("../repository-adapter.js");
+  const targets = await listRepositoryTargets({ repoRoot, configPath });
+  if (jsonMode) {
+    console.log(JSON.stringify({ targets }, null, 2));
+    return;
+  }
+  for (const target of targets) {
+    console.log(`${target.id}\t${target.language}\t${target.source}\t${target.tests}`);
   }
 }
 
@@ -162,8 +192,10 @@ Usage:
   patchproof runner [--once] [--id runner_1] [--isolation docker|process]
   patchproof migrate
   patchproof scenarios
+  patchproof targets [--repo .] [--config patchproof.yml] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]
   patchproof run --input input.json [--out certificate.json] [--json]
+  patchproof run --target <id> [--repo .] [--config patchproof.yml] [--out certificate.json] [--json]
   patchproof verify <certificate.json> [--json]
   patchproof version
 
