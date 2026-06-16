@@ -50,6 +50,7 @@ CLI usage:
 ```powershell
 node bin/patchproof.js scenarios
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
+node bin/patchproof.js inspect --repo path/to/project
 node bin/patchproof.js targets --repo path/to/project
 node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
 node bin/patchproof.js verify certificate.json
@@ -200,6 +201,14 @@ Selected p1 with evidence score 0.93.
 ## Repository Targets
 
 PatchProof can map files from a repository checkout into the same function-level input format used by the CLI and web app. This first repository adapter reads a source file, extracts one named JavaScript or Python function, reads a JSON PatchProof test file, and builds a verifier input. It does not run Jest, Vitest, or pytest yet.
+
+Inspect a checkout before writing targets:
+
+```powershell
+node bin/patchproof.js inspect --repo path/to/project
+```
+
+The inspector reports git branch/commit, package manager, detected languages, likely test frameworks, test commands, candidate source files, candidate test files, and existing PatchProof targets. Use `--json` for machine-readable output.
 
 Create `patchproof.yml` in the repository you want to test:
 

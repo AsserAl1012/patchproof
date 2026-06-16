@@ -30,6 +30,8 @@ try {
     for (const example of examples) {
       console.log(`${example.id}\t${example.title}\t${example.subtitle}`);
     }
+  } else if (command === "inspect") {
+    await inspectCommand(args.slice(1));
   } else if (command === "targets") {
     await targetsCommand(args.slice(1));
   } else if (command === "run") {
@@ -104,6 +106,19 @@ async function targetsCommand(targetArgs) {
   for (const target of targets) {
     console.log(`${target.id}\t${target.language}\t${target.source}\t${target.tests}`);
   }
+}
+
+async function inspectCommand(inspectArgs) {
+  const repoRoot = readOption(inspectArgs, "--repo");
+  const configPath = readOption(inspectArgs, "--config");
+  const jsonMode = inspectArgs.includes("--json");
+  const { inspectRepository } = await import("../repository-adapter.js");
+  const report = await inspectRepository({ repoRoot, configPath });
+  if (jsonMode) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  printInspectReport(report);
 }
 
 async function verifyCommand(verifyArgs) {
@@ -192,6 +207,7 @@ Usage:
   patchproof runner [--once] [--id runner_1] [--isolation docker|process]
   patchproof migrate
   patchproof scenarios
+  patchproof inspect [--repo .] [--config patchproof.yml] [--json]
   patchproof targets [--repo .] [--config patchproof.yml] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]
   patchproof run --input input.json [--out certificate.json] [--json]
@@ -210,4 +226,42 @@ Input file shape:
     "postcondition": "true"
   }
 `);
+}
+
+function printInspectReport(report) {
+  console.log(`Repository: ${report.repoRoot}`);
+  if (report.git.available) {
+    console.log(`Git: ${report.git.branch || "detached"} ${report.git.commit}${report.git.dirty ? " dirty" : ""}`);
+  }
+  console.log(`Package manager: ${report.packageManager || "unknown"}`);
+  console.log(`Languages: ${report.languages.length ? report.languages.join(", ") : "none detected"}`);
+  console.log(`Frameworks: ${report.frameworks.length ? report.frameworks.join(", ") : "none detected"}`);
+  if (report.testCommands.length) {
+    console.log("Test commands:");
+    for (const item of report.testCommands) console.log(`- ${item.command}`);
+  }
+  console.log(`PatchProof config: ${report.patchproof.configured ? report.patchproof.config : "missing"}`);
+  if (report.patchproof.error) console.log(`PatchProof config error: ${report.patchproof.error}`);
+  if (report.patchproof.targets.length) {
+    console.log("PatchProof targets:");
+    for (const target of report.patchproof.targets) {
+      console.log(`- ${target.id}: ${target.language} ${target.source} -> ${target.tests}`);
+    }
+  }
+  if (report.suggestions.candidateSourceFiles.length) {
+    console.log("Candidate source files:");
+    for (const file of report.suggestions.candidateSourceFiles) console.log(`- ${file}`);
+  }
+  if (report.suggestions.candidatePatchProofTests.length) {
+    console.log("PatchProof test files:");
+    for (const file of report.suggestions.candidatePatchProofTests) console.log(`- ${file}`);
+  }
+  if (report.suggestions.candidateProjectTests.length) {
+    console.log("Project test files:");
+    for (const file of report.suggestions.candidateProjectTests) console.log(`- ${file}`);
+  }
+  if (report.suggestions.next.length) {
+    console.log("Next:");
+    for (const item of report.suggestions.next) console.log(`- ${item}`);
+  }
 }

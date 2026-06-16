@@ -136,3 +136,23 @@ targets:
   const certificate = JSON.parse(run.stdout);
   assert.equal(certificate.status, "certified");
 });
+
+test("CLI inspects repository metadata", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-inspect-"));
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "package.json"), JSON.stringify({
+    scripts: { test: "node --test" }
+  }, null, 2), "utf8");
+  await writeFile(join(repo, "src", "math.js"), "export function add(a, b) { return a + b; }\n", "utf8");
+  await writeFile(join(repo, "tests", "math.test.js"), "import test from 'node:test';\n", "utf8");
+
+  const result = spawnSync(node, ["bin/patchproof.js", "inspect", "--repo", repo, "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.packageManager, "npm");
+  assert.ok(report.frameworks.includes("node:test"));
+  assert.ok(report.sourceFiles.includes("src/math.js"));
+});

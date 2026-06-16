@@ -1,7 +1,23 @@
-import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { parsePatchproofConfig } from "./saas/config.js";
 import { languageOf } from "./runtime.js";
+
+const SKIP_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".next",
+  ".turbo",
+  ".venv",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "__pycache__",
+  "venv"
+]);
 
 export async function loadRepositoryConfig(options = {}) {
   const repoRoot = resolve(options.repoRoot || process.cwd());
@@ -23,6 +39,42 @@ export async function listRepositoryTargets(options = {}) {
     tests: target.tests || target.testsPath || target.testFile || "",
     functionName: target.function || target.functionName || ""
   }));
+}
+
+export async function inspectRepository(options = {}) {
+  const repoRoot = resolve(options.repoRoot || process.cwd());
+  const configPath = options.configPath || "patchproof.yml";
+  const files = await listRepositoryFiles(repoRoot, options.maxFiles || 2500);
+  const packageJson = await readJsonIfExists(repoRoot, "package.json");
+  const pyproject = await readTextIfExists(repoRoot, "pyproject.toml");
+  const pytestIni = await readTextIfExists(repoRoot, "pytest.ini");
+  const setupCfg = await readTextIfExists(repoRoot, "setup.cfg");
+  const requirements = await readTextIfExists(repoRoot, "requirements.txt");
+  const patchproofConfigText = await readTextIfExists(repoRoot, configPath);
+  const patchproof = patchproofConfigText
+    ? summarizePatchproofConfig(patchproofConfigText, configPath)
+    : { configured: false, config: configPath, targets: [], error: null };
+  const sourceFiles = files.filter(isSourceFile);
+  const testFiles = files.filter(isTestFile);
+  const patchproofTestFiles = testFiles.filter((file) => file.endsWith(".patchproof.json"));
+  const packageManager = detectPackageManager(files);
+  const frameworks = detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, testFiles });
+  const languages = detectLanguages({ files, packageJson, pyproject });
+  const testCommands = detectTestCommands({ packageJson, frameworks });
+
+  return {
+    repoRoot,
+    git: gitInfo(repoRoot),
+    packageManager,
+    languages,
+    frameworks,
+    testCommands,
+    sourceFiles: sourceFiles.slice(0, 100),
+    testFiles: testFiles.slice(0, 100),
+    patchproofTestFiles: patchproofTestFiles.slice(0, 100),
+    patchproof,
+    suggestions: buildInspectionSuggestions({ patchproof, frameworks, sourceFiles, patchproofTestFiles, testFiles })
+  };
 }
 
 export async function createInputFromRepositoryTarget(options = {}) {
@@ -106,6 +158,181 @@ function normalizeTestsFile(text, testsFile) {
     throw new Error(`Tests file '${testsFile}' must contain a JSON array or an object with a tests array.`);
   }
   return JSON.stringify(tests, null, 2);
+}
+
+async function listRepositoryFiles(repoRoot, maxFiles) {
+  const files = [];
+  async function visit(directory) {
+    if (files.length >= maxFiles) return;
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (files.length >= maxFiles) break;
+      const fullPath = resolve(directory, entry.name);
+      const repoPath = toRepoPath(repoRoot, fullPath);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRECTORIES.has(entry.name)) await visit(fullPath);
+      } else if (entry.isFile()) {
+        files.push(repoPath);
+      }
+    }
+  }
+  await visit(repoRoot);
+  return files.sort();
+}
+
+async function readTextIfExists(repoRoot, repoPath) {
+  try {
+    return await readFile(resolveRepoPath(repoRoot, repoPath, repoPath), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+async function readJsonIfExists(repoRoot, repoPath) {
+  const text = await readTextIfExists(repoRoot, repoPath);
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function summarizePatchproofConfig(text, configPath) {
+  try {
+    const config = parsePatchproofConfig(text);
+    return {
+      configured: true,
+      config: configPath,
+      targets: Object.entries(config.targets || {}).map(([id, target]) => ({
+        id,
+        language: target.language || config.project.language,
+        source: target.source || target.sourcePath || target.file || "",
+        tests: target.tests || target.testsPath || target.testFile || "",
+        functionName: target.function || target.functionName || ""
+      })),
+      error: null
+    };
+  } catch (error) {
+    return { configured: true, config: configPath, targets: [], error: error.message };
+  }
+}
+
+function detectPackageManager(files) {
+  if (files.includes("pnpm-lock.yaml")) return "pnpm";
+  if (files.includes("yarn.lock")) return "yarn";
+  if (files.includes("package-lock.json")) return "npm";
+  if (files.includes("package.json")) return "npm";
+  if (files.includes("poetry.lock")) return "poetry";
+  if (files.includes("uv.lock")) return "uv";
+  if (files.includes("pyproject.toml")) return "python";
+  return null;
+}
+
+function detectLanguages({ files, packageJson, pyproject }) {
+  const languages = new Set();
+  if (packageJson || files.some((file) => /\.(?:mjs|cjs|js|jsx)$/.test(file))) languages.add("javascript");
+  if (files.some((file) => /\.(?:ts|tsx)$/.test(file))) languages.add("typescript");
+  if (pyproject || files.some((file) => /\.py$/.test(file))) languages.add("python");
+  return [...languages].sort();
+}
+
+function detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, testFiles }) {
+  const frameworks = new Set();
+  const scripts = Object.values(packageJson?.scripts || {}).join(" ");
+  const dependencies = {
+    ...(packageJson?.dependencies || {}),
+    ...(packageJson?.devDependencies || {})
+  };
+  const dependencyText = `${Object.keys(dependencies).join(" ")} ${scripts}`;
+  if (/\bvitest\b/.test(dependencyText)) frameworks.add("vitest");
+  if (/\bjest\b/.test(dependencyText)) frameworks.add("jest");
+  if (/\bnode\s+--test\b/.test(scripts) || testFiles.some((file) => /\.(?:test|spec)\.(?:mjs|cjs|js)$/.test(file))) {
+    frameworks.add("node:test");
+  }
+  const pythonConfig = [pyproject, pytestIni, setupCfg, requirements].filter(Boolean).join("\n");
+  if (/\bpytest\b/i.test(pythonConfig) || testFiles.some((file) => /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/.test(file))) {
+    frameworks.add("pytest");
+  }
+  return [...frameworks].sort();
+}
+
+function detectTestCommands({ packageJson, frameworks }) {
+  const commands = [];
+  if (packageJson?.scripts?.test) commands.push({ tool: "npm", command: "npm test" });
+  if (frameworks.includes("vitest") && !commands.some((item) => item.command.includes("vitest"))) {
+    commands.push({ tool: "vitest", command: "npx vitest run" });
+  }
+  if (frameworks.includes("jest") && !commands.some((item) => item.command.includes("jest"))) {
+    commands.push({ tool: "jest", command: "npx jest" });
+  }
+  if (frameworks.includes("pytest")) commands.push({ tool: "pytest", command: "python -m pytest" });
+  return commands;
+}
+
+function isSourceFile(file) {
+  if (isTestFile(file)) return false;
+  if (!/\.(?:mjs|cjs|js|jsx|ts|tsx|py)$/.test(file)) return false;
+  return /^(?:src|lib|app|packages|server|services)\//.test(file) || !file.includes("/");
+}
+
+function isTestFile(file) {
+  const name = basename(file);
+  return /(?:^|\/)(?:test|tests|__tests__)\//.test(file) ||
+    /\.(?:test|spec)\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(file) ||
+    /(?:^test_.*|.*_test)\.py$/.test(name) ||
+    /\.patchproof\.json$/.test(file);
+}
+
+function buildInspectionSuggestions({ patchproof, frameworks, sourceFiles, patchproofTestFiles, testFiles }) {
+  const next = [];
+  if (!patchproof.configured) {
+    next.push("Add patchproof.yml with targets that map source files to JSON PatchProof tests.");
+  } else if (patchproof.error) {
+    next.push(`Fix patchproof.yml: ${patchproof.error}`);
+  } else if (!patchproof.targets.length) {
+    next.push("Add at least one target under patchproof.yml targets.");
+  }
+  if (!patchproofTestFiles.length) {
+    next.push("Add *.patchproof.json tests for functions you want PatchProof to certify.");
+  }
+  if (frameworks.some((framework) => ["jest", "vitest", "pytest"].includes(framework))) {
+    next.push("Framework tests were detected; direct Jest/Vitest/pytest extraction is the next adapter layer.");
+  }
+  return {
+    readyTargets: patchproof.targets.length,
+    candidateSourceFiles: sourceFiles.slice(0, 10),
+    candidatePatchProofTests: patchproofTestFiles.slice(0, 10),
+    candidateProjectTests: testFiles.filter((file) => !file.endsWith(".patchproof.json")).slice(0, 10),
+    next
+  };
+}
+
+function gitInfo(repoRoot) {
+  const commit = runGit(repoRoot, ["rev-parse", "--short", "HEAD"]);
+  const branch = runGit(repoRoot, ["branch", "--show-current"]);
+  const status = runGit(repoRoot, ["status", "--porcelain"]);
+  return {
+    available: Boolean(commit),
+    branch: branch || null,
+    commit: commit || null,
+    dirty: Boolean(status)
+  };
+}
+
+function runGit(repoRoot, args) {
+  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5000
+  });
+  if (result.status !== 0) return "";
+  return String(result.stdout || "").trim();
 }
 
 function extractJavaScriptFunction(source, functionName, sourcePath) {

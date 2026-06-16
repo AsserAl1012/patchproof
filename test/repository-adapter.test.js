@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createInputFromRepositoryTarget,
+  inspectRepository,
   listRepositoryTargets
 } from "../repository-adapter.js";
 import { runPatchProof } from "../runtime.js";
@@ -125,6 +126,45 @@ targets:
     () => createInputFromRepositoryTarget({ repoRoot: repo, targetId: "x" }),
     /not allowed|forbidden/
   );
+});
+
+test("repository inspector detects JavaScript project metadata", async () => {
+  const repo = await fixtureRepo("inspect-js-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "package.json"), JSON.stringify({
+    scripts: { test: "vitest run" },
+    devDependencies: { vitest: "^1.0.0" }
+  }, null, 2), "utf8");
+  await writeFile(join(repo, "package-lock.json"), "{}\n", "utf8");
+  await writeFile(join(repo, "src", "clamp.js"), "export function clamp(value) { return value; }\n", "utf8");
+  await writeFile(join(repo, "tests", "clamp.test.js"), "import { test } from 'vitest';\n", "utf8");
+  await writeFile(join(repo, "tests", "clamp.patchproof.json"), "[]\n", "utf8");
+
+  const report = await inspectRepository({ repoRoot: repo });
+  assert.equal(report.packageManager, "npm");
+  assert.ok(report.languages.includes("javascript"));
+  assert.ok(report.frameworks.includes("vitest"));
+  assert.ok(report.testCommands.some((item) => item.command === "npm test"));
+  assert.ok(report.testCommands.some((item) => item.command === "npx vitest run"));
+  assert.ok(report.sourceFiles.includes("src/clamp.js"));
+  assert.ok(report.patchproofTestFiles.includes("tests/clamp.patchproof.json"));
+});
+
+test("repository inspector detects Python pytest metadata", async () => {
+  const repo = await fixtureRepo("inspect-python-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "pyproject.toml"), "[tool.pytest.ini_options]\npythonpath = ['src']\n", "utf8");
+  await writeFile(join(repo, "src", "ranges.py"), "def clamp(value):\n    return value\n", "utf8");
+  await writeFile(join(repo, "tests", "test_ranges.py"), "def test_clamp():\n    assert True\n", "utf8");
+
+  const report = await inspectRepository({ repoRoot: repo });
+  assert.equal(report.packageManager, "python");
+  assert.ok(report.languages.includes("python"));
+  assert.ok(report.frameworks.includes("pytest"));
+  assert.deepEqual(report.testCommands.map((item) => item.command), ["python -m pytest"]);
+  assert.ok(report.suggestions.next.some((item) => item.includes("patchproof.yml")));
 });
 
 async function fixtureRepo(prefix) {

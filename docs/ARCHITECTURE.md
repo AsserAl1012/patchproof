@@ -16,8 +16,9 @@ bin/patchproof.js
   CLI for serving the app, running scenarios, migrating Postgres, running workers, and replaying certificates
 
 repository-adapter.js
-  Reads patchproof.yml repository targets, extracts one named source function,
-  reads JSON PatchProof tests, and builds verifier inputs
+  Inspects repository checkouts, detects package/test metadata, reads patchproof.yml
+  targets, extracts one named source function, reads JSON PatchProof tests, and
+  builds verifier inputs
 
 saas/
   Postgres/JSON store adapters, migrations, Redis/memory queues, artifact storage,
