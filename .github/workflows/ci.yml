@@ -20,5 +20,12 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - run: npm run check
+      - run: npm run release:check
       - run: npm test
       - run: npm run smoke
+      - name: Validate local GitHub Action
+        run: node bin/patchproof.js run --scenario clamp-range --out certificate.json
+      - uses: ./
+        with:
+          certificate: certificate.json
+      - run: npm pack --dry-run

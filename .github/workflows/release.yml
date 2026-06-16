@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the npm package after validation.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm run check
+      - run: npm run release:check
+      - run: npm test
+      - run: npm run smoke
+      - name: Validate versioned GitHub Action
+        run: node bin/patchproof.js run --scenario clamp-range --out certificate.json
+      - uses: ./
+        with:
+          certificate: certificate.json
+      - run: npm pack --dry-run
+      - name: Publish npm package
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::Set the NPM_TOKEN repository secret before publishing."
+            exit 1
+          fi
+          npm publish --access public --provenance
