@@ -13,11 +13,14 @@ worker.js
   isolated execution boundary for repair and validation
 
 bin/patchproof.js
-  CLI for serving the app, running scenarios, migrating Postgres, running workers, and replaying certificates
+  CLI for serving the app, initializing/checking repositories, running scenarios,
+  applying certified target patches, migrating Postgres, running workers, and
+  replaying certificates
 
 repository-adapter.js
   Inspects repository checkouts, detects package/test metadata, reads patchproof.yml
-  targets, extracts one named source function, reads JSON PatchProof tests, and
+  targets, extracts one named source function, reads JSON PatchProof tests or
+  simple framework assertions, applies certified function replacements, and
   builds verifier inputs
 
 saas/
@@ -44,13 +47,13 @@ test/
 
 ## Validation Pipeline
 
-1. Optionally build input from a repository target: source file plus JSON PatchProof tests.
+1. Optionally build input from a repository target: source file plus JSON PatchProof tests or simple Jest/Vitest/node:test/pytest literal assertions.
 2. Parse executable tests.
 3. Dispatch by language: JavaScript uses the Node verifier and Python uses the restricted Python process verifier.
 4. Run baseline tests and require observed failing evidence.
 5. Generate a finite input domain from test values and boundary expansions.
 6. Filter the generated domain through the precondition.
-7. Generate candidate patches through a configured model provider before sandbox execution, then add local repair-template candidates when capacity remains.
+7. Generate candidate patches through an explicitly configured model provider before sandbox execution, then add local repair-template candidates when capacity remains.
 8. For each candidate:
    - compile candidate;
    - run explicit tests;

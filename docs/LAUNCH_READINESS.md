@@ -5,6 +5,8 @@ Status reviewed against source and configuration on 2026-06-15.
 ## Implemented In This Pass
 
 - OpenAI-compatible, Azure OpenAI, and local chat-completions candidate generation for queued runs.
+- Local CLI model candidate generation behind explicit `--model` or repository config.
+- Repository `init`, `doctor`, checkout inspection, simple Jest/Vitest/node:test/pytest assertion extraction, and certified function patch application.
 - Provider credentials remain outside the isolated verifier; certificates store hashed provenance.
 - Model candidates are included in deterministic replay input and validated like local-template candidates.
 - Certificate verification compares the complete deterministic certificate, excluding only generation time.
@@ -33,8 +35,8 @@ Status reviewed against source and configuration on 2026-06-15.
 - Test backup and restore procedures with real Postgres and object storage data.
 - Add structured logs, request IDs, traces, model latency/error metrics, and alerting rules.
 - Validate provider-specific token fields and support the OpenAI Responses API where required.
-- Expand repository adapters into real checkout/test adapters before claiming whole-repository repair. The current adapter inspects checkout metadata and maps configured source/test files into named-function JavaScript or Python verifier inputs.
-- Change GitHub patch application from committing a `.patch` artifact to applying reviewed file changes when repository repair exists.
+- Expand repository adapters from simple literal assertion extraction into full framework execution/coverage adapters before claiming whole-repository repair.
+- Change GitHub patch application from committing a `.patch` artifact to applying reviewed file changes once the repository repair workflow is wired into GitHub App runs.
 
 ## P1 Release Engineering
 
@@ -47,7 +49,7 @@ Status reviewed against source and configuration on 2026-06-15.
 ## P2 Product Completeness
 
 - Replace the simple source-token denylist with a stronger parser-based policy and hardened execution boundary.
-- Broaden Python beyond standalone restricted functions only after repository checkout, dependency isolation, and real project test adapters exist. TypeScript still requires its own execution path.
+- Broaden Python beyond standalone restricted functions only after dependency isolation and full pytest execution adapters exist. TypeScript still requires its own execution path.
 - Add richer generated domains, property-based generators, coverage feedback, and pluggable mutation engines.
 - Version the HTTP API and publish an OpenAPI specification.
 - Add billing/quotas only after job accounting and abuse controls are reliable.

@@ -37,11 +37,14 @@ npm run runner
 
 ```powershell
 node bin/patchproof.js scenarios
+node bin/patchproof.js init --repo path/to/project
+node bin/patchproof.js doctor --repo path/to/project
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
 node bin/patchproof.js run --input examples/clamp-range.input.json --out certificate.json
 node bin/patchproof.js inspect --repo path/to/project
 node bin/patchproof.js targets --repo path/to/project
-node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
+node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
@@ -52,14 +55,29 @@ After publishing to npm, the same commands become:
 
 ```powershell
 npx patchproof scenarios
+npx patchproof init --repo path/to/project
+npx patchproof doctor --repo path/to/project
 npx patchproof run --scenario clamp-range --out certificate.json
 npx patchproof run --input examples/clamp-range.input.json --out certificate.json
 npx patchproof inspect --repo path/to/project
 npx patchproof targets --repo path/to/project
-npx patchproof run --repo path/to/project --target clamp-range --out certificate.json
+npx patchproof run --repo path/to/project --target clamp-range --out certificate.json --apply
+npx patchproof apply --certificate certificate.json --repo path/to/project --target clamp-range
 npx patchproof verify certificate.json
 npx patchproof serve
 ```
+
+## Solo Dev Workflow
+
+```powershell
+npx patchproof inspect --repo .
+npx patchproof init --repo .
+npx patchproof doctor --repo .
+npx patchproof run --repo . --target <target-id> --out patchproof-certificate.json
+npx patchproof run --repo . --target <target-id> --out patchproof-certificate.json --apply
+```
+
+`init` creates a starter `patchproof.yml` from checkout metadata. `doctor` validates local setup, configured targets, Python availability when needed, and detected test adapters. `run --apply` writes the certified replacement function back into the target source file only when the certificate is accepted and the source still matches the replay input.
 
 ## Private SaaS Flow
 
@@ -89,13 +107,13 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 
 - JavaScript: functions declared as `function name(...) { ... }`
 - Python: one named `def` function with JSON-compatible inputs/results; imports and unsafe builtins are rejected
-- Test format: JSON array with `name`, `args`, and `expect`
+- Test format: JSON array with `name`, `args`, and `expect`, plus conservative extraction from simple Jest, Vitest, node:test, and pytest literal assertions
 - Envelope format: JavaScript expressions for JavaScript runs and Python expressions for Python runs
-- Repository adapter: `patchproof inspect` profiles a checkout and `patchproof.yml` can map source/test files into function-level PatchProof targets
+- Repository adapter: `patchproof inspect`, `init`, and `doctor` profile a checkout and `patchproof.yml` can map source/test files or simple framework assertions into function-level PatchProof targets
 - Proof mode: finite-domain bounded equivalence, not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner
-- Repair model: language-specific local repair templates, plus configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in queued SaaS runs
+- Repair model: language-specific local repair templates, plus explicitly configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in CLI/SaaS runs
 
 Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Browser-worker fallback remains JavaScript-only. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
 

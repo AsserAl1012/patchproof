@@ -105,6 +105,6 @@ Avoid claiming:
 ## Roadmap After Release
 
 1. Multi-file repository repair adapters.
-2. Jest/Vitest/pytest integration.
+2. Full Jest/Vitest/pytest execution and coverage adapters.
 3. gVisor/Firecracker runner hardening.
 4. Hosted version after sandbox review.

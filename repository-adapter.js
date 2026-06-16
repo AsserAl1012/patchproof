@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { parsePatchproofConfig } from "./saas/config.js";
 import { languageOf } from "./runtime.js";
@@ -36,7 +36,9 @@ export async function listRepositoryTargets(options = {}) {
     id,
     language: target.language || config.project.language,
     source: target.source || target.sourcePath || target.file || "",
-    tests: target.tests || target.testsPath || target.testFile || "",
+    tests: target.tests || target.testsPath || "",
+    frameworkTests: target.frameworkTests || target.projectTests || target.testFile || "",
+    framework: target.framework || "",
     functionName: target.function || target.functionName || ""
   }));
 }
@@ -61,6 +63,7 @@ export async function inspectRepository(options = {}) {
   const frameworks = detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, testFiles });
   const languages = detectLanguages({ files, packageJson, pyproject });
   const testCommands = detectTestCommands({ packageJson, frameworks });
+  const frameworkAdapters = detectFrameworkAdapters({ frameworks, testFiles });
 
   return {
     repoRoot,
@@ -68,6 +71,7 @@ export async function inspectRepository(options = {}) {
     packageManager,
     languages,
     frameworks,
+    frameworkAdapters,
     testCommands,
     sourceFiles: sourceFiles.slice(0, 100),
     testFiles: testFiles.slice(0, 100),
@@ -75,6 +79,101 @@ export async function inspectRepository(options = {}) {
     patchproof,
     suggestions: buildInspectionSuggestions({ patchproof, frameworks, sourceFiles, patchproofTestFiles, testFiles })
   };
+}
+
+export async function initializeRepositoryConfig(options = {}) {
+  const repoRoot = resolve(options.repoRoot || process.cwd());
+  const configPath = options.configPath || "patchproof.yml";
+  const fullConfigPath = resolveRepoPath(repoRoot, configPath, "config");
+  const existing = await readTextIfExists(repoRoot, configPath);
+  if (existing && !options.force) {
+    throw new Error(`${configPath} already exists. Pass --force to overwrite it.`);
+  }
+  const report = await inspectRepository({ repoRoot, configPath });
+  const configText = await buildInitialConfigText(repoRoot, report);
+  await writeFile(fullConfigPath, configText, "utf8");
+  return {
+    repoRoot,
+    config: configPath,
+    created: !existing,
+    overwritten: Boolean(existing),
+    report,
+    configText
+  };
+}
+
+export async function doctorRepository(options = {}) {
+  const report = await inspectRepository(options);
+  const checks = [];
+  addCheck(checks, "node", "ok", `Node ${process.versions.node} is available.`);
+  if (!report.patchproof.configured) {
+    addCheck(checks, "config", "warning", `${report.patchproof.config} is missing. Run patchproof init --repo ${report.repoRoot}`);
+  } else if (report.patchproof.error) {
+    addCheck(checks, "config", "error", `Invalid ${report.patchproof.config}: ${report.patchproof.error}`);
+  } else {
+    addCheck(checks, "config", "ok", `${report.patchproof.config} is valid with ${report.patchproof.targets.length} target(s).`);
+  }
+
+  if (!report.testCommands.length) {
+    addCheck(checks, "tests", "warning", "No project test command was detected.");
+  } else {
+    for (const item of report.testCommands) {
+      addCheck(checks, `tests:${item.tool}`, "ok", `Detected test command: ${item.command}`);
+    }
+  }
+
+  if (report.languages.includes("python")) {
+    const python = pythonInfo();
+    addCheck(
+      checks,
+      "python",
+      python.available ? "ok" : "warning",
+      python.available
+        ? `${python.executable} is available (${python.version}).`
+        : "Python was detected in the checkout but no Python executable was found."
+    );
+  }
+
+  for (const adapter of report.frameworkAdapters) {
+    addCheck(
+      checks,
+      `adapter:${adapter.framework}`,
+      adapter.supported ? "ok" : "warning",
+      adapter.supported
+        ? `${adapter.framework} adapter can extract simple literal assertions from ${adapter.testFiles.length} file(s).`
+        : `${adapter.framework} was detected but no adapter is available.`
+    );
+  }
+
+  if (report.patchproof.configured && !report.patchproof.error) {
+    const targetChecks = await diagnoseTargets(options);
+    checks.push(...targetChecks);
+  }
+
+  const overall = checks.some((check) => check.status === "error")
+    ? "error"
+    : checks.some((check) => check.status === "warning")
+      ? "warning"
+      : "ok";
+  return { overall, report, checks };
+}
+
+export async function extractFrameworkTests(options = {}) {
+  const repoRoot = resolve(options.repoRoot || process.cwd());
+  const testPath = options.testPath || options.frameworkTests || options.projectTests;
+  const functionName = String(options.functionName || options.function || "").trim();
+  if (!testPath) throw new Error("framework test extraction requires a testPath.");
+  if (!functionName) throw new Error("framework test extraction requires functionName.");
+  const fullPath = resolveRepoPath(repoRoot, testPath, "framework tests");
+  const text = await readFile(fullPath, "utf8");
+  const framework = normalizeFramework(options.framework || inferFrameworkFromPath(testPath));
+  const tests = framework === "pytest"
+    ? parsePytestAssertions(text, functionName)
+    : parseJavaScriptFrameworkAssertions(text, functionName, framework);
+  if (!tests.length) {
+    throw new Error(`No simple ${framework} assertions for '${functionName}' were found in ${testPath}.`);
+  }
+  return tests;
 }
 
 export async function createInputFromRepositoryTarget(options = {}) {
@@ -89,17 +188,28 @@ export async function createInputFromRepositoryTarget(options = {}) {
   const language = languageOf({ language: configuredLanguage });
 
   const sourcePath = target.source || target.sourcePath || target.file;
-  const testsPath = target.tests || target.testsPath || target.testFile;
+  const testsPath = target.tests || target.testsPath || (String(target.testFile || "").endsWith(".patchproof.json") ? target.testFile : "");
+  const frameworkTestsPath = target.frameworkTests || target.projectTests || (!testsPath ? target.testFile : "");
   if (!sourcePath) throw new Error(`Repository target '${targetId}' is missing source.`);
-  if (!testsPath) throw new Error(`Repository target '${targetId}' is missing tests.`);
+  if (!testsPath && !frameworkTestsPath) {
+    throw new Error(`Repository target '${targetId}' is missing tests or frameworkTests.`);
+  }
 
   assertAllowedTargetPath(config, repoRoot, sourcePath, "source");
-  assertAllowedTargetPath(config, repoRoot, testsPath, "tests");
+  if (testsPath) assertAllowedTargetPath(config, repoRoot, testsPath, "tests");
+  if (frameworkTestsPath) assertAllowedTargetPath(config, repoRoot, frameworkTestsPath, "framework tests");
   const sourceFile = resolveRepoPath(repoRoot, sourcePath, "source");
-  const testsFile = resolveRepoPath(repoRoot, testsPath, "tests");
+  const testsFile = testsPath ? resolveRepoPath(repoRoot, testsPath, "tests") : null;
   const functionName = target.function || target.functionName || "";
   const sourceText = await readFile(sourceFile, "utf8");
-  const testsText = normalizeTestsFile(await readFile(testsFile, "utf8"), testsFile);
+  const tests = testsFile
+    ? normalizeTestsFile(await readFile(testsFile, "utf8"), testsFile)
+    : JSON.stringify(await extractFrameworkTests({
+      repoRoot,
+      testPath: frameworkTestsPath,
+      functionName,
+      framework: target.framework || config.project?.testFramework
+    }), null, 2);
   const source = language === "python"
     ? extractPythonFunction(sourceText, functionName, sourcePath)
     : extractJavaScriptFunction(sourceText, functionName, sourcePath);
@@ -107,7 +217,7 @@ export async function createInputFromRepositoryTarget(options = {}) {
   return {
     language,
     source,
-    testsText,
+    testsText: tests,
     bugReport: target.bugReport || target.bug || "",
     preconditionText: target.preconditionText || target.precondition || "",
     mayChangeText: target.mayChangeText || target.mayChange || "",
@@ -119,9 +229,47 @@ export async function createInputFromRepositoryTarget(options = {}) {
       config: relative(repoRoot, configPath),
       target: targetId,
       source: toRepoPath(repoRoot, sourceFile),
-      tests: toRepoPath(repoRoot, testsFile),
+      tests: testsFile ? toRepoPath(repoRoot, testsFile) : frameworkTestsPath,
+      testSource: testsFile ? "patchproof-json" : "framework-adapter",
       function: functionName || inferredFunctionName(language, source)
     }
+  };
+}
+
+export async function applyCertificatePatchToRepositoryTarget(options = {}) {
+  const certificate = options.certificate;
+  if (!certificate || typeof certificate !== "object") throw new Error("certificate is required.");
+  const selected = certificate.selectedPatch;
+  if (certificate.status !== "certified" || !selected?.accepted || !selected.source) {
+    throw new Error("Only an accepted certified patch can be applied.");
+  }
+  const { repoRoot, config, configPath } = await loadRepositoryConfig(options);
+  const targets = config.targets || {};
+  const targetId = selectTargetId(targets, options.targetId || certificate.replay?.input?.repository?.target);
+  const target = targets[targetId];
+  const configuredLanguage = String(target.language || config.project.language || certificate.target?.language || "javascript").toLowerCase();
+  const language = languageOf({ language: configuredLanguage });
+  const sourcePath = target.source || target.sourcePath || target.file;
+  if (!sourcePath) throw new Error(`Repository target '${targetId}' is missing source.`);
+  assertAllowedTargetPath(config, repoRoot, sourcePath, "source");
+  const sourceFile = resolveRepoPath(repoRoot, sourcePath, "source");
+  const sourceText = await readFile(sourceFile, "utf8");
+  const functionName = target.function || target.functionName || certificate.target?.function || "";
+  const expectedSource = certificate.replay?.input?.source || "";
+  const replacement = language === "python"
+    ? replacePythonFunctionSource(sourceText, functionName, selected.source, expectedSource, sourcePath)
+    : replaceJavaScriptFunctionSource(sourceText, functionName, selected.source, expectedSource, sourcePath);
+  const diff = unifiedSourceDiff(sourceText, replacement.source);
+  if (!options.dryRun) await writeFile(sourceFile, replacement.source, "utf8");
+  return {
+    applied: !options.dryRun,
+    dryRun: Boolean(options.dryRun),
+    repoRoot,
+    config: relative(repoRoot, configPath),
+    target: targetId,
+    source: toRepoPath(repoRoot, sourceFile),
+    function: replacement.functionName,
+    diff
   };
 }
 
@@ -158,6 +306,183 @@ function normalizeTestsFile(text, testsFile) {
     throw new Error(`Tests file '${testsFile}' must contain a JSON array or an object with a tests array.`);
   }
   return JSON.stringify(tests, null, 2);
+}
+
+async function buildInitialConfigText(repoRoot, report) {
+  const language = preferredLanguage(report.languages);
+  const allowedPaths = inferredAllowedPaths(report);
+  const targetSuggestions = await suggestInitialTargets(repoRoot, report, language);
+  const testCommand = report.testCommands[0]?.command || (language === "python" ? "python -m pytest" : "npm test");
+  const installCommand = installCommandFor(report.packageManager, language);
+  const rows = [
+    "version: 1",
+    "project:",
+    `  language: ${language}`,
+    `  testCommand: ${quoteYaml(testCommand)}`,
+    `  installCommand: ${quoteYaml(installCommand)}`,
+    "  allowedPaths:",
+    ...allowedPaths.map((path) => `    - ${path}`),
+    "  forbiddenPaths:",
+    "    - .env",
+    "    - secrets/**",
+    "runner:",
+    "  timeoutSeconds: 600",
+    "  memoryMb: 2048",
+    "  cpus: 2",
+    "  network: disabled",
+    "repair:",
+    "  maxCandidates: 8",
+    "  requireCertificate: true",
+    "  minEvidenceScore: 0.75",
+    "model:",
+    "  provider: disabled",
+    "  baseUrl: \"\"",
+    "  apiKeyEnv: PATCHPROOF_MODEL_API_KEY",
+    "  model: \"\"",
+    "targets:"
+  ];
+  if (targetSuggestions.length) {
+    for (const target of targetSuggestions) {
+      rows.push(
+        `  ${target.id}:`,
+        `    source: ${target.source}`,
+        `    function: ${target.functionName}`,
+        target.tests
+          ? `    tests: ${target.tests}`
+          : `    framework: ${target.framework}`,
+        ...(target.frameworkTests ? [`    frameworkTests: ${target.frameworkTests}`] : []),
+        "    bugReport: Describe the observed bug and expected behavior.",
+        "    precondition: true",
+        "    mayChange: false",
+        "    postcondition: true"
+      );
+    }
+  } else {
+    rows.push(
+      "  # Add one target per function you want PatchProof to certify.",
+      "  # example:",
+      "  #   source: src/example.js",
+      "  #   function: example",
+      "  #   tests: tests/example.patchproof.json",
+      "  #   bugReport: Describe the observed bug and expected behavior.",
+      "  #   precondition: true",
+      "  #   mayChange: false",
+      "  #   postcondition: true"
+    );
+  }
+  return `${rows.join("\n")}\n`;
+}
+
+async function suggestInitialTargets(repoRoot, report, language) {
+  const sourceByStem = new Map(report.sourceFiles.map((file) => [basename(file).replace(/\.[^.]+$/, ""), file]));
+  const targets = [];
+  for (const tests of report.patchproofTestFiles) {
+    const stem = basename(tests).replace(/\.patchproof\.json$/, "").replace(/\.(?:test|spec)$/, "");
+    const source = sourceByStem.get(stem);
+    if (!source) continue;
+    const functionName = await inferSingleFunctionName(repoRoot, source, language);
+    if (!functionName) continue;
+    targets.push({ id: slugId(stem), source, functionName, tests });
+  }
+  if (targets.length) return targets.slice(0, 5);
+
+  for (const testFile of report.testFiles.filter((file) => !file.endsWith(".patchproof.json"))) {
+    const stem = basename(testFile).replace(/\.(?:test|spec)\.[^.]+$/, "").replace(/^test_/, "").replace(/_test$/, "");
+    const source = sourceByStem.get(stem);
+    if (!source) continue;
+    const functionName = await inferSingleFunctionName(repoRoot, source, language);
+    if (!functionName) continue;
+    const framework = inferFrameworkFromPath(testFile);
+    if (!["jest", "vitest", "node:test", "pytest"].includes(framework)) continue;
+    targets.push({ id: slugId(stem), source, functionName, framework, frameworkTests: testFile });
+  }
+  return targets.slice(0, 5);
+}
+
+async function inferSingleFunctionName(repoRoot, sourcePath, language) {
+  try {
+    const text = await readFile(resolveRepoPath(repoRoot, sourcePath, "source"), "utf8");
+    const matches = language === "python"
+      ? [...text.matchAll(/^def\s+([A-Za-z_]\w*)\s*\(/gm)].map((match) => match[1])
+      : [...text.matchAll(/(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map((match) => match[1]);
+    return matches.length === 1 ? matches[0] : "";
+  } catch {
+    return "";
+  }
+}
+
+function preferredLanguage(languages) {
+  if (languages.includes("python") && !languages.includes("javascript")) return "python";
+  return languages.includes("javascript") ? "javascript" : languages[0] || "javascript";
+}
+
+function inferredAllowedPaths(report) {
+  const roots = new Set(["src/**", "lib/**", "tests/**", "test/**"]);
+  for (const file of [...report.sourceFiles, ...report.testFiles]) {
+    const first = file.split("/")[0];
+    if (first && first !== file && !["node_modules", ".git"].includes(first)) roots.add(`${first}/**`);
+  }
+  return [...roots].sort();
+}
+
+function installCommandFor(packageManager, language) {
+  if (packageManager === "pnpm") return "pnpm install --frozen-lockfile";
+  if (packageManager === "yarn") return "yarn install --frozen-lockfile";
+  if (packageManager === "npm") return "npm ci";
+  if (packageManager === "poetry") return "poetry install";
+  if (packageManager === "uv") return "uv sync";
+  return language === "python" ? "python -m pip install -r requirements.txt" : "npm install";
+}
+
+async function diagnoseTargets(options) {
+  let targets;
+  try {
+    targets = await listRepositoryTargets(options);
+  } catch (error) {
+    return [{ name: "targets", status: "error", message: error.message }];
+  }
+  if (!targets.length) {
+    return [{ name: "targets", status: "warning", message: "No PatchProof targets are configured yet." }];
+  }
+  const checks = [];
+  for (const target of targets) {
+    try {
+      const input = await createInputFromRepositoryTarget({ ...options, targetId: target.id });
+      const tests = JSON.parse(input.testsText);
+      addCheck(
+        checks,
+        `target:${target.id}`,
+        "ok",
+        `${target.id} resolves ${input.language} function '${input.repository.function}' with ${tests.length} test(s).`
+      );
+    } catch (error) {
+      addCheck(checks, `target:${target.id}`, "error", `${target.id}: ${error.message}`);
+    }
+  }
+  return checks;
+}
+
+function addCheck(checks, name, status, message) {
+  checks.push({ name, status, message });
+}
+
+function pythonInfo() {
+  const candidates = process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
+  for (const executable of candidates) {
+    const result = spawnSync(executable, ["--version"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5000
+    });
+    if (result.status === 0) {
+      return {
+        available: true,
+        executable,
+        version: String(result.stdout || result.stderr || "").trim()
+      };
+    }
+  }
+  return { available: false, executable: null, version: null };
 }
 
 async function listRepositoryFiles(repoRoot, maxFiles) {
@@ -262,6 +587,22 @@ function detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, require
   return [...frameworks].sort();
 }
 
+function detectFrameworkAdapters({ frameworks, testFiles }) {
+  return frameworks.map((framework) => {
+    const adapter = normalizeFramework(framework);
+    const supported = ["jest", "vitest", "node:test", "pytest"].includes(adapter);
+    return {
+      framework,
+      adapter,
+      supported,
+      testFiles: testFiles.filter((file) => frameworkMatchesFile(adapter, file)).slice(0, 50),
+      limitation: supported
+        ? "Extracts direct literal assertions such as expect(fn(args)).toEqual(value) or assert fn(args) == value."
+        : "No direct framework adapter yet."
+    };
+  });
+}
+
 function detectTestCommands({ packageJson, frameworks }) {
   const commands = [];
   if (packageJson?.scripts?.test) commands.push({ tool: "npm", command: "npm test" });
@@ -273,6 +614,155 @@ function detectTestCommands({ packageJson, frameworks }) {
   }
   if (frameworks.includes("pytest")) commands.push({ tool: "pytest", command: "python -m pytest" });
   return commands;
+}
+
+function frameworkMatchesFile(framework, file) {
+  if (framework === "pytest") return /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/.test(file);
+  if (["jest", "vitest", "node:test"].includes(framework)) {
+    return /\.(?:test|spec)\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(file) || /(?:^|\/)(?:test|tests|__tests__)\//.test(file);
+  }
+  return false;
+}
+
+function inferFrameworkFromPath(testPath) {
+  if (/\.py$/.test(testPath)) return "pytest";
+  if (/\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(testPath)) return "jest";
+  return "unknown";
+}
+
+function normalizeFramework(framework) {
+  const value = String(framework || "").toLowerCase();
+  if (value === "node" || value === "node:test") return "node:test";
+  if (value === "py" || value === "pytest") return "pytest";
+  if (value === "vitest") return "vitest";
+  if (value === "jest") return "jest";
+  return value || "unknown";
+}
+
+function parseJavaScriptFrameworkAssertions(text, functionName, framework) {
+  const tests = [];
+  const source = String(text || "");
+  const name = escapeRegex(functionName);
+  const expectPattern = new RegExp(
+    `expect\\s*\\(\\s*${name}\\s*\\(([^\\)]*)\\)\\s*\\)\\s*\\.\\s*(?:toBe|toEqual|toStrictEqual)\\s*\\(([^\\n;]*)\\)`,
+    "g"
+  );
+  const assertPattern = new RegExp(
+    `assert\\s*\\.\\s*(?:equal|strictEqual|deepEqual|deepStrictEqual)\\s*\\(\\s*${name}\\s*\\(([^\\)]*)\\)\\s*,\\s*([^\\n;]*)\\)`,
+    "g"
+  );
+  for (const match of source.matchAll(expectPattern)) {
+    pushExtractedTest(tests, functionName, match[1], match[2], framework);
+  }
+  for (const match of source.matchAll(assertPattern)) {
+    pushExtractedTest(tests, functionName, match[1], match[2], framework);
+  }
+  return tests;
+}
+
+function parsePytestAssertions(text, functionName) {
+  const tests = [];
+  const name = escapeRegex(functionName);
+  const pattern = new RegExp(`assert\\s+${name}\\s*\\(([^\\)]*)\\)\\s*==\\s*([^#\\n]+)`, "g");
+  for (const match of String(text || "").matchAll(pattern)) {
+    pushExtractedTest(tests, functionName, match[1], match[2], "pytest");
+  }
+  return tests;
+}
+
+function pushExtractedTest(tests, functionName, argsText, expectText, framework) {
+  try {
+    tests.push({
+      name: `${framework} ${functionName} case ${tests.length + 1}`,
+      args: splitTopLevel(argsText).map(parseSimpleLiteral),
+      expect: parseSimpleLiteral(expectText)
+    });
+  } catch {
+    // Ignore assertions that use variables, matchers, callbacks, snapshots, or other non-literal values.
+  }
+}
+
+function splitTopLevel(text) {
+  const values = [];
+  let current = "";
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (const char of String(text || "")) {
+    if (quote) {
+      current += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      current += char;
+    } else if (char === "[" || char === "{" || char === "(") {
+      depth += 1;
+      current += char;
+    } else if (char === "]" || char === "}" || char === ")") {
+      depth -= 1;
+      current += char;
+    } else if (char === "," && depth === 0) {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) values.push(current.trim());
+  return values;
+}
+
+function parseSimpleLiteral(text) {
+  const value = String(text || "").trim().replace(/;$/, "");
+  if (!value) throw new Error("empty literal");
+  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  if (["true", "True"].includes(value)) return true;
+  if (["false", "False"].includes(value)) return false;
+  if (["null", "None"].includes(value)) return null;
+  if (value === "undefined") return undefined;
+  if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+    return parseQuotedString(value);
+  }
+  if (value.startsWith("[") && value.endsWith("]")) {
+    const inner = value.slice(1, -1).trim();
+    return inner ? splitTopLevel(inner).map(parseSimpleLiteral) : [];
+  }
+  if (value.startsWith("{") && value.endsWith("}")) {
+    return parseSimpleObject(value);
+  }
+  throw new Error(`unsupported literal: ${value}`);
+}
+
+function parseQuotedString(value) {
+  const quote = value[0];
+  const body = value.slice(1, -1);
+  if (quote === "\"") return JSON.parse(value);
+  return body.replace(/\\'/g, "'").replace(/\\\\/g, "\\").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+}
+
+function parseSimpleObject(value) {
+  const body = value.slice(1, -1).trim();
+  if (!body) return {};
+  const object = {};
+  for (const entry of splitTopLevel(body)) {
+    const separator = entry.indexOf(":");
+    if (separator === -1) throw new Error("unsupported object literal");
+    const keyText = entry.slice(0, separator).trim();
+    const rawKey = keyText.startsWith("\"") || keyText.startsWith("'")
+      ? parseQuotedString(keyText)
+      : keyText;
+    if (!/^[A-Za-z_$][\w$]*$/.test(rawKey)) throw new Error("unsupported object key");
+    object[rawKey] = parseSimpleLiteral(entry.slice(separator + 1));
+  }
+  return object;
 }
 
 function isSourceFile(file) {
@@ -302,7 +792,7 @@ function buildInspectionSuggestions({ patchproof, frameworks, sourceFiles, patch
     next.push("Add *.patchproof.json tests for functions you want PatchProof to certify.");
   }
   if (frameworks.some((framework) => ["jest", "vitest", "pytest"].includes(framework))) {
-    next.push("Framework tests were detected; direct Jest/Vitest/pytest extraction is the next adapter layer.");
+    next.push("Framework tests were detected; configure frameworkTests on targets or run patchproof init to generate starter targets.");
   }
   return {
     readyTargets: patchproof.targets.length,
@@ -336,6 +826,10 @@ function runGit(repoRoot, args) {
 }
 
 function extractJavaScriptFunction(source, functionName, sourcePath) {
+  return extractJavaScriptFunctionSpan(source, functionName, sourcePath).source;
+}
+
+function extractJavaScriptFunctionSpan(source, functionName, sourcePath) {
   const namePattern = functionName ? escapeRegex(functionName) : "[A-Za-z_$][\\w$]*";
   const pattern = new RegExp(`(?:export\\s+)?(?:default\\s+)?function\\s+(${namePattern})\\s*\\(`, "g");
   const matches = [...source.matchAll(pattern)];
@@ -354,10 +848,19 @@ function extractJavaScriptFunction(source, functionName, sourcePath) {
   const bodyStart = source.indexOf("{", start);
   if (bodyStart === -1) throw new Error(`Could not find function body in ${sourcePath}.`);
   const end = findMatchingBrace(source, bodyStart);
-  return source.slice(start, end + 1).trim();
+  return {
+    functionName: match[1],
+    start,
+    end: end + 1,
+    source: source.slice(start, end + 1).trim()
+  };
 }
 
 function extractPythonFunction(source, functionName, sourcePath) {
+  return extractPythonFunctionSpan(source, functionName, sourcePath).source;
+}
+
+function extractPythonFunctionSpan(source, functionName, sourcePath) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const pattern = functionName
     ? new RegExp(`^(\\s*)def\\s+${escapeRegex(functionName)}\\s*\\(`)
@@ -387,7 +890,73 @@ function extractPythonFunction(source, functionName, sourcePath) {
       break;
     }
   }
-  return lines.slice(start, end).map((line) => line.slice(indent)).join("\n").trim();
+  const lineOffsets = lineStartOffsets(source.replace(/\r\n/g, "\n"));
+  const startOffset = lineOffsets[start] + indent;
+  const endOffset = end >= lineOffsets.length ? source.length : lineOffsets[end];
+  return {
+    functionName: functionName || lines[start].match(/def\s+([A-Za-z_]\w*)\s*\(/)?.[1] || "",
+    start: startOffset,
+    end: endOffset,
+    indent,
+    source: lines.slice(start, end).map((line) => line.slice(indent)).join("\n").trim()
+  };
+}
+
+function replaceJavaScriptFunctionSource(sourceText, functionName, nextSource, expectedSource, sourcePath) {
+  const span = extractJavaScriptFunctionSpan(sourceText, functionName, sourcePath);
+  assertCurrentSourceMatches(span.source, expectedSource, sourcePath);
+  return {
+    functionName: span.functionName,
+    source: `${sourceText.slice(0, span.start)}${String(nextSource).trim()}${sourceText.slice(span.end)}`
+  };
+}
+
+function replacePythonFunctionSource(sourceText, functionName, nextSource, expectedSource, sourcePath) {
+  const span = extractPythonFunctionSpan(sourceText, functionName, sourcePath);
+  assertCurrentSourceMatches(span.source, expectedSource, sourcePath);
+  const indent = " ".repeat(span.indent || 0);
+  const replacement = String(nextSource)
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => `${indent}${line}`)
+    .join("\n");
+  return {
+    functionName: span.functionName,
+    source: `${sourceText.slice(0, span.start)}${replacement}${sourceText.slice(span.end)}`
+  };
+}
+
+function assertCurrentSourceMatches(currentSource, expectedSource, sourcePath) {
+  if (!String(expectedSource || "").trim()) return;
+  if (String(currentSource).trim() !== String(expectedSource).trim()) {
+    throw new Error(`Current source for ${sourcePath} does not match the certificate replay input. Re-run PatchProof before applying.`);
+  }
+}
+
+function lineStartOffsets(source) {
+  const offsets = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "\n") offsets.push(index + 1);
+  }
+  return offsets;
+}
+
+function unifiedSourceDiff(oldSource, newSource) {
+  const oldLines = oldSource.split("\n");
+  const newLines = newSource.split("\n");
+  const rows = ["--- source", "+++ source"];
+  const max = Math.max(oldLines.length, newLines.length);
+  for (let index = 0; index < max; index += 1) {
+    const oldLine = oldLines[index];
+    const newLine = newLines[index];
+    if (oldLine === newLine) {
+      rows.push(` ${oldLine ?? ""}`);
+    } else {
+      if (oldLine !== undefined) rows.push(`-${oldLine}`);
+      if (newLine !== undefined) rows.push(`+${newLine}`);
+    }
+  }
+  return rows.join("\n");
 }
 
 function inferredFunctionName(language, source) {
@@ -479,6 +1048,18 @@ function matchPath(pattern, path) {
   if (!normalized.includes("*")) return path === normalized;
   const regex = new RegExp(`^${normalized.split("*").map(escapeRegex).join(".*")}$`);
   return regex.test(path);
+}
+
+function slugId(value) {
+  return String(value || "target")
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "target";
+}
+
+function quoteYaml(value) {
+  return JSON.stringify(String(value || ""));
 }
 
 function escapeRegex(value) {

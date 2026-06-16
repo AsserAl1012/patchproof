@@ -49,10 +49,13 @@ CLI usage:
 
 ```powershell
 node bin/patchproof.js scenarios
+node bin/patchproof.js init --repo path/to/project
+node bin/patchproof.js doctor --repo path/to/project
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
 node bin/patchproof.js inspect --repo path/to/project
 node bin/patchproof.js targets --repo path/to/project
-node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
+node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
@@ -200,7 +203,7 @@ Selected p1 with evidence score 0.93.
 
 ## Repository Targets
 
-PatchProof can map files from a repository checkout into the same function-level input format used by the CLI and web app. This first repository adapter reads a source file, extracts one named JavaScript or Python function, reads a JSON PatchProof test file, and builds a verifier input. It does not run Jest, Vitest, or pytest yet.
+PatchProof can map files from a repository checkout into the same function-level input format used by the CLI and web app. The repository adapter reads a source file, extracts one named JavaScript or Python function, and builds verifier input from either JSON PatchProof tests or conservative framework-test extraction.
 
 Inspect a checkout before writing targets:
 
@@ -208,7 +211,21 @@ Inspect a checkout before writing targets:
 node bin/patchproof.js inspect --repo path/to/project
 ```
 
-The inspector reports git branch/commit, package manager, detected languages, likely test frameworks, test commands, candidate source files, candidate test files, and existing PatchProof targets. Use `--json` for machine-readable output.
+The inspector reports git branch/commit, package manager, detected languages, likely test frameworks, supported framework adapters, test commands, candidate source files, candidate test files, and existing PatchProof targets. Use `--json` for machine-readable output.
+
+Generate a starter config:
+
+```powershell
+node bin/patchproof.js init --repo path/to/project
+```
+
+Check whether the project is ready:
+
+```powershell
+node bin/patchproof.js doctor --repo path/to/project
+```
+
+`doctor` validates the PatchProof config, target source/test paths, framework extraction, detected test commands, and Python availability when the project needs Python.
 
 Create `patchproof.yml` in the repository you want to test:
 
@@ -255,6 +272,49 @@ Run one target:
 node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json
 ```
 
+Apply an accepted certified patch back to the source file:
+
+```powershell
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
+```
+
+Or apply a saved certificate:
+
+```powershell
+node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range --dry-run
+node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range
+```
+
+Patch application is deliberately narrow. PatchProof replaces only the configured target function, refuses rejected certificates, and refuses to apply when the current source no longer matches the certificate replay input.
+
+Framework-backed targets can use simple literal assertions from Jest, Vitest, node:test, or pytest:
+
+```yaml
+targets:
+  clamp-range:
+    source: src/clamp.js
+    function: clamp
+    framework: vitest
+    frameworkTests: tests/clamp.test.js
+    bugReport: Upper guard compares value to min instead of max.
+    precondition: args[1] <= args[2]
+    mayChange: args[0] > args[1] && args[0] < args[2]
+    postcondition: result === Math.min(Math.max(args[0], args[1]), args[2])
+```
+
+Supported assertion shapes include direct literal cases such as:
+
+```js
+expect(clamp(6, 0, 10)).toBe(6);
+assert.equal(clamp(6, 0, 10), 6);
+```
+
+```python
+assert clamp(6, 0, 10) == 6
+```
+
+PatchProof ignores complex framework tests that use variables, mocks, snapshots, async flows, custom matchers, or non-literal expected values. Those tests should be converted to `.patchproof.json` for now.
+
 For Python targets, set `project.language: python` or `language: python` on the target and use Python expressions in the envelope:
 
 ```yaml
@@ -270,6 +330,16 @@ targets:
 ```
 
 Path safety is enforced with `allowedPaths` and `forbiddenPaths`. Source and test paths must stay inside the repository root.
+
+## Model Candidates In Local CLI Runs
+
+Local CLI runs use local repair templates by default. To add model-generated candidates, explicitly pass `--model` and configure a provider with CLI flags, environment variables, or `patchproof.yml`:
+
+```powershell
+node bin/patchproof.js run --repo . --target clamp-range --model --model-provider openai-compatible --model-base-url https://api.openai.com/v1 --model-name <model>
+```
+
+Credentials are read from `PATCHPROOF_MODEL_API_KEY` by default, or the env var named by `--model-api-key-env`. Model candidates are still treated as untrusted and must pass the same bounded verifier before they can be certified or applied.
 
 ## What Makes A Strong Certificate
 
@@ -300,6 +370,7 @@ PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, 
 ## Current Limitations
 
 - No multi-file project repair yet; repository targets still extract one named function.
+- Framework adapters only extract simple literal assertions; they do not execute the full Jest, Vitest, node:test, or pytest suite.
 - No symbolic solver yet; the bounded proof is finite-domain differential validation.
 - Browser quick-run history is local-only; project runs are persisted by the SaaS backend.
 - No support for async functions, network, filesystem, DOM, or database behavior.

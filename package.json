@@ -26,6 +26,7 @@
   "exports": {
     ".": "./runtime.js",
     "./engine": "./engine.js",
+    "./repository-adapter": "./repository-adapter.js",
     "./server": "./server.js"
   },
   "files": [
