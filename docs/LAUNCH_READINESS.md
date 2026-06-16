@@ -8,6 +8,8 @@ Status reviewed against source and configuration on 2026-06-15.
 - Local CLI model candidate generation behind explicit `--model` or repository config.
 - Repository `init`, `doctor`, checkout inspection, simple Jest/Vitest/node:test/pytest assertion extraction, and certified function patch application.
 - Provider credentials remain outside the isolated verifier; certificates store hashed provenance.
+- Model generation reports prompt/response size metadata and enforces `maxPromptChars`.
+- Expanded Python local repair operators for common string, collection, range, and exception-oriented function bugs.
 - Model candidates are included in deterministic replay input and validated like local-template candidates.
 - Certificate verification compares the complete deterministic certificate, excluding only generation time.
 - Candidate, test, finite-domain, counterexample, mutation, and evidence thresholds are enforced.

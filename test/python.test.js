@@ -35,6 +35,73 @@ test("Python validates supplied model candidates for user functions", () => {
   assert.equal(result.certificate.selectedPatch.generator, "local");
 });
 
+test("Python local templates repair whitespace slug bugs", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `def slugify(title):
+    cleaned = title.strip().lower()
+    return cleaned.replace(" ", "-")`,
+    tests: [
+      { name: "one space", args: ["Hello World"], expect: "hello-world" },
+      { name: "many spaces", args: ["Hello   World"], expect: "hello-world" },
+      { name: "trim", args: ["  API Client  "], expect: "api-client" }
+    ],
+    bugReport: "slugify should collapse every whitespace run into one dash",
+    precondition: "isinstance(args[0], str)",
+    mayChange: "' ' in args[0].strip()",
+    postcondition: "result == '-'.join(args[0].strip().lower().split())"
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.selectedPatch.template, "collapse-whitespace-slug");
+});
+
+test("Python local templates repair append return bugs", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `def add_item(items, value):
+    return items.append(value)`,
+    tests: [
+      { name: "adds to empty", args: [[], 1], expect: [1] },
+      { name: "adds to existing", args: [[1, 2], 3], expect: [1, 2, 3] }
+    ],
+    bugReport: "append mutates the list but returns None; return the updated list",
+    precondition: "isinstance(args[0], list)",
+    mayChange: "True",
+    postcondition: "isinstance(result, list) and len(result) == len(args[0]) + 1"
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.selectedPatch.template, "append-return-list");
+});
+
+test("Python supplied candidates may raise safe built-in exceptions", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `def require_positive(value):
+    if value < 0:
+        return None
+    return value`,
+    tests: [
+      { name: "negative rejected", args: [-1], expectError: "ValueError" },
+      { name: "positive preserved", args: [2], expect: 2 }
+    ],
+    bugReport: "negative values should raise ValueError",
+    precondition: "isinstance(args[0], int)",
+    mayChange: "args[0] < 0",
+    postcondition: "observation['ok'] == (args[0] >= 0)",
+    candidatePatches: [
+      {
+        source: `def require_positive(value):
+    if value < 0:
+        raise ValueError("negative")
+    return value`,
+        title: "Raise ValueError"
+      }
+    ]
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.selectedPatch.generator, "model");
+});
+
 test("Python rejects imports and unsafe builtins", () => {
   assert.throws(
     () =>

@@ -318,7 +318,8 @@ async function modelSettingsForRun({ args, repoRoot, configPath, targetId }) {
     baseUrl,
     model,
     apiKey: process.env[apiKeyEnv] || process.env.PATCHPROOF_MODEL_API_KEY || "",
-    maxCandidates: Number(readOption(args, "--model-candidates") || configModel.maxCandidates || 8)
+    maxCandidates: Number(readOption(args, "--model-candidates") || configModel.maxCandidates || 8),
+    maxPromptChars: Number(readOption(args, "--model-max-prompt-chars") || configModel.maxPromptChars || 20000)
   };
 }
 
@@ -376,6 +377,7 @@ Model candidate options:
   --model-name <name>
   --model-api-key-env PATCHPROOF_MODEL_API_KEY
   --model-candidates <n>
+  --model-max-prompt-chars <n>
 
 Input file shape:
   {

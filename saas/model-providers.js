@@ -23,6 +23,7 @@ export function normalizeModelProvider(settings = {}) {
     (provider === "disabled" ? "local-repair-templates" : "");
   const maxTokens = positiveInteger(settings.maxTokens, 4096, "maxTokens");
   const maxCandidates = positiveInteger(settings.maxCandidates, 8, "maxCandidates");
+  const maxPromptChars = positiveInteger(settings.maxPromptChars, 20000, "maxPromptChars");
   const timeoutMs = positiveInteger(settings.timeoutMs, 60000, "timeoutMs");
 
   if (provider !== "disabled" && !baseUrl) {
@@ -38,6 +39,7 @@ export function normalizeModelProvider(settings = {}) {
     model: String(model),
     maxTokens,
     maxCandidates,
+    maxPromptChars,
     timeoutMs,
     apiVersion: String(settings.apiVersion || "2024-10-21"),
     promptLogging: Boolean(settings.promptLogging),
@@ -76,19 +78,38 @@ export function buildRepairPrompt(input = {}) {
   ].join("\n");
 }
 
+export function estimateModelUsage({ settings = {}, input = {} } = {}) {
+  const normalized = normalizeModelProvider(settings);
+  const prompt = buildRepairPrompt(input);
+  return {
+    provider: normalized.provider,
+    model: normalized.model,
+    promptChars: prompt.length,
+    estimatedPromptTokens: Math.ceil(prompt.length / 4),
+    maxPromptChars: normalized.maxPromptChars,
+    maxCompletionTokens: normalized.maxTokens,
+    maxCandidates: normalized.maxCandidates
+  };
+}
+
 export async function generateModelCandidates({ settings = {}, input = {}, fetchImpl = globalThis.fetch } = {}) {
   const normalized = normalizeModelProvider(settings);
+  const usage = estimateModelUsage({ settings: normalized, input });
   if (normalized.provider === "disabled") {
     return {
       candidates: [],
       provenance: modelProvenance(normalized),
       provider: normalized.provider,
-      model: normalized.model
+      model: normalized.model,
+      usage
     };
   }
   if (typeof fetchImpl !== "function") throw new Error("A fetch implementation is required for model generation.");
 
   const prompt = buildRepairPrompt(input);
+  if (prompt.length > normalized.maxPromptChars) {
+    throw new Error(`Model prompt is ${prompt.length} characters, exceeding maxPromptChars ${normalized.maxPromptChars}.`);
+  }
   const apiKey = settings.apiKey || process.env.PATCHPROOF_MODEL_API_KEY || "";
   if (normalized.provider !== "local" && !apiKey) {
     throw new Error("Model provider apiKey is required.");
@@ -107,7 +128,7 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
       messages: [
         {
           role: "system",
-          content: "You are a conservative JavaScript repair generator. Output valid JSON only."
+          content: `You are a conservative ${String(input.language || "javascript")} repair generator. Output valid JSON only.`
         },
         { role: "user", content: prompt }
       ],
@@ -161,7 +182,12 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
     candidates,
     provenance: modelProvenance(normalized, prompt, candidates.map((candidate) => candidate.source).join("\n\n")),
     provider: normalized.provider,
-    model: normalized.model
+    model: normalized.model,
+    usage: {
+      ...usage,
+      responseChars: responseText.length,
+      returnedCandidates: candidates.length
+    }
   };
 }
 

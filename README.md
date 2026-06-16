@@ -106,14 +106,14 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 ## Prototype Boundaries
 
 - JavaScript: functions declared as `function name(...) { ... }`
-- Python: one named `def` function with JSON-compatible inputs/results; imports and unsafe builtins are rejected
+- Python: one named `def` function with JSON-compatible inputs/results; imports, classes, decorators, dynamic builtins, and private attributes are rejected, while normal built-in exceptions such as `ValueError` can be raised
 - Test format: JSON array with `name`, `args`, and `expect`, plus conservative extraction from simple Jest, Vitest, node:test, and pytest literal assertions
 - Envelope format: JavaScript expressions for JavaScript runs and Python expressions for Python runs
 - Repository adapter: `patchproof inspect`, `init`, and `doctor` profile a checkout and `patchproof.yml` can map source/test files or simple framework assertions into function-level PatchProof targets
 - Proof mode: finite-domain bounded equivalence, not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner
-- Repair model: language-specific local repair templates, plus explicitly configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in CLI/SaaS runs
+- Repair model: language-specific local repair templates, plus explicitly configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in CLI/SaaS runs with prompt-size controls and usage estimates
 
 Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Browser-worker fallback remains JavaScript-only. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
 

@@ -17,7 +17,7 @@ Python input uses:
 }
 ```
 
-Python support currently accepts exactly one named function, JSON-compatible arguments and results, and Python expressions for the behavioral envelope. Imports, decorators, classes, filesystem/network APIs, and unsafe dynamic builtins are rejected. Use the CLI or server; browser-only fallback cannot execute Python.
+Python support currently accepts exactly one named function, JSON-compatible arguments and results, normal built-in exceptions such as `ValueError`, and Python expressions for the behavioral envelope. Imports, decorators, classes, filesystem/network APIs, private attributes, and unsafe dynamic builtins are rejected. Use the CLI or server; browser-only fallback cannot execute Python.
 
 ## Purpose
 
@@ -336,10 +336,12 @@ Path safety is enforced with `allowedPaths` and `forbiddenPaths`. Source and tes
 Local CLI runs use local repair templates by default. To add model-generated candidates, explicitly pass `--model` and configure a provider with CLI flags, environment variables, or `patchproof.yml`:
 
 ```powershell
-node bin/patchproof.js run --repo . --target clamp-range --model --model-provider openai-compatible --model-base-url https://api.openai.com/v1 --model-name <model>
+node bin/patchproof.js run --repo . --target clamp-range --model --model-provider openai-compatible --model-base-url https://api.openai.com/v1 --model-name <model> --model-max-prompt-chars 20000
 ```
 
 Credentials are read from `PATCHPROOF_MODEL_API_KEY` by default, or the env var named by `--model-api-key-env`. Model candidates are still treated as untrusted and must pass the same bounded verifier before they can be certified or applied.
+
+Model settings also support `maxPromptChars`, `maxTokens`, and `maxCandidates`. PatchProof estimates prompt size before the call and refuses prompts above `maxPromptChars` so a repository target cannot accidentally send an unexpectedly large model request.
 
 ## What Makes A Strong Certificate
 
@@ -371,6 +373,7 @@ PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, 
 
 - No multi-file project repair yet; repository targets still extract one named function.
 - Framework adapters only extract simple literal assertions; they do not execute the full Jest, Vitest, node:test, or pytest suite.
+- Python local repair templates cover common function-level bugs such as wrong upper-bound comparisons, slice/range off-by-one errors, whitespace slugification, missing increments, and returning `list.append(...)`.
 - No symbolic solver yet; the bounded proof is finite-domain differential validation.
 - Browser quick-run history is local-only; project runs are persisted by the SaaS backend.
 - No support for async functions, network, filesystem, DOM, or database behavior.

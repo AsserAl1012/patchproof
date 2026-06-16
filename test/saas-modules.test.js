@@ -4,6 +4,7 @@ import { hasPermission, normalizeRole, requirePermission } from "../saas/rbac.js
 import { parsePatchproofConfig } from "../saas/config.js";
 import {
   buildRepairPrompt,
+  estimateModelUsage,
   generateModelCandidates,
   normalizeModelProvider,
   modelProvenance
@@ -108,7 +109,41 @@ test("model provider generates structured repair candidates", async () => {
   assert.equal(generated.candidates.length, 1);
   assert.equal(generated.candidates[0].provenance.provider, "openai-compatible");
   assert.equal(generated.candidates[0].provenance.candidateHash.length, 64);
+  assert.equal(generated.usage.returnedCandidates, 1);
+  assert.ok(generated.usage.estimatedPromptTokens > 0);
   assert.match(buildRepairPrompt({ source: "function x() {}" }), /complete replacement/);
+});
+
+test("model provider reports usage estimates and enforces prompt budget", async () => {
+  const usage = estimateModelUsage({
+    settings: {
+      provider: "openai-compatible",
+      baseUrl: "https://models.example/v1",
+      model: "repair-model",
+      maxPromptChars: 2000
+    },
+    input: { language: "python", source: "def x():\n    return 1" }
+  });
+  assert.equal(usage.provider, "openai-compatible");
+  assert.equal(usage.maxPromptChars, 2000);
+  assert.ok(usage.promptChars > 0);
+
+  await assert.rejects(
+    () => generateModelCandidates({
+      settings: {
+        provider: "openai-compatible",
+        baseUrl: "https://models.example/v1",
+        apiKey: "secret",
+        model: "repair-model",
+        maxPromptChars: 10
+      },
+      input: { source: "function x() { return 1; }" },
+      fetchImpl: async () => {
+        throw new Error("should not be called");
+      }
+    }),
+    /exceeding maxPromptChars/
+  );
 });
 
 test("azure model provider uses deployment endpoint and api-key header", async () => {

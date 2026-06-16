@@ -30,7 +30,7 @@ SAFE_BUILTINS = {
 }
 FORBIDDEN_NODES = (
     ast.Import, ast.ImportFrom, ast.ClassDef, ast.AsyncFunctionDef, ast.Await,
-    ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith, ast.Try, ast.Raise,
+    ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith, ast.Try,
     ast.Delete, ast.Yield, ast.YieldFrom, ast.Lambda,
 )
 FORBIDDEN_NAMES = {
@@ -42,6 +42,9 @@ FORBIDDEN_NAMES = {
 PYTHON_TEMPLATES = [
     ("upper-bound-variable", "Replace lower-bound variable in upper-bound check", ["local-branch-change", "range-boundary"], [(r">\s*min\b", "> max")]),
     ("slice-limit-off-by-one", "Remove off-by-one from slice limit", ["boundary-change", "collection-size"], [(r"\[:\s*limit\s*-\s*1\s*\]", "[:limit]")]),
+    ("range-len-off-by-one", "Include the final item in len-based range iteration", ["boundary-change", "collection-iteration"], [(r"range\(\s*len\(([^)]+)\)\s*-\s*1\s*\)", r"range(len(\1))")]),
+    ("collapse-whitespace-slug", "Collapse every whitespace run before joining with dashes", ["string-normalization", "whitespace-change"], [(r"return\s+([A-Za-z_]\w*)\.replace\([\"'] [\"'],\s*[\"']-[\"']\)", "return \"-\".join(\\1.split())")]),
+    ("append-return-list", "Return the list after append instead of append's None result", ["mutation-visible", "collection-return"], [(r"^(\s*)return\s+([A-Za-z_]\w*)\.append\(([^)]*)\)\s*$", r"\1\2.append(\3)\n\1return \2")]),
     ("missing-increment", "Add missing increment to returned value", ["arithmetic-change"], [(r"return\s+value\s*$", "return value + 1")]),
 ]
 
@@ -426,7 +429,8 @@ def build_certificate(data, started_at, old_program, baseline, bug_tests, passin
     if len(domain) < 100: residual.append("Finite behavioral envelope is small; add tests to broaden generated inputs.")
     if not data["postconditionText"].strip(): residual.append("No postcondition was provided, so bug-fix proof is limited to explicit tests.")
     if not selected.get("boundedProof") or selected["boundedProof"]["status"] != "no-counterexample-in-finite-envelope": residual.append("Selected patch has at least one bounded counterexample.")
-    if selected.get("mutation", {}).get("survivors"): residual.append(f"{len(selected['mutation']['survivors'])} simple patch mutants survived validation.")
+    mutation = selected.get("mutation") or {}
+    if mutation.get("survivors"): residual.append(f"{len(mutation['survivors'])} simple patch mutants survived validation.")
     replay_input = {key: data[key] for key in ("language", "source", "testsText", "bugReport", "preconditionText", "mayChangeText", "postconditionText", "executionMode", "candidatePatches", "modelProvenance", "limits")}
     run_id = fnv_hash(json.dumps(replay_input, sort_keys=True, separators=(",", ":")))
     validation = {"compileError": selected["compileError"]} if not selected.get("explicitTests") else {

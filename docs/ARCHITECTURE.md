@@ -80,7 +80,7 @@ PatchProof treats candidate generation as untrusted. A patch is only accepted wh
 
 ## Model Integration
 
-`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints for JavaScript or Python. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Providers return:
+`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints for JavaScript or Python. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Prompt size is estimated before the call and bounded by `maxPromptChars`; generation results include prompt/response size metadata for observability. Providers return:
 
 ```json
 {
