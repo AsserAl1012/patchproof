@@ -26,7 +26,7 @@ test("serves app shell and security headers", async () => {
     assert.match(body, /PatchProof/);
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     const csp = response.headers.get("content-security-policy");
-    assert.match(csp, /worker-src 'self'/);
+    assert.match(csp, /worker-src 'none'/);
     assert.doesNotMatch(csp, /unsafe-eval/);
   } finally {
     server.close();

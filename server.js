@@ -23,6 +23,7 @@ const root = resolve(process.cwd());
 const requestedPort = Number.parseInt(process.env.PORT || "4173", 10);
 const requestedHost = process.env.HOST || "127.0.0.1";
 const MAX_API_BODY_BYTES = 64 * 1024;
+const SESSION_COOKIE_NAME = "patchproof_session";
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -235,7 +236,7 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     return;
   }
   const method = req.method || "GET";
-  const token = getBearerToken(req);
+  const token = getRequestToken(req);
   const needsBody = ["POST", "PATCH", "PUT"].includes(method);
   const readBody = needsBody ? await readJsonBody(req, MAX_API_BODY_BYTES, { includeRaw: true }) : { json: {}, raw: "" };
   const body = readBody.json;
@@ -246,18 +247,26 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
       writeJson(res, 409, { ok: false, error: { message: "Bootstrap is already complete." } });
       return;
     }
-    writeJson(res, 201, { ok: true, ...(await store.bootstrap(body)) });
+    const boot = await store.bootstrap(body);
+    writeJson(res, 201, { ok: true, ...authResponse(boot, body) }, {
+      "Set-Cookie": sessionCookie(boot.token, req)
+    });
     return;
   }
 
   if (requestPath === "/api/auth/login" && method === "POST") {
-    writeJson(res, 200, { ok: true, ...(await store.login(body)) });
+    const login = await store.login(body);
+    writeJson(res, 200, { ok: true, ...authResponse(login, body) }, {
+      "Set-Cookie": sessionCookie(login.token, req)
+    });
     return;
   }
 
   if (requestPath === "/api/auth/logout" && method === "POST") {
     await store.logout(token);
-    writeJson(res, 200, { ok: true });
+    writeJson(res, 200, { ok: true }, {
+      "Set-Cookie": clearSessionCookie(req)
+    });
     return;
   }
 
@@ -603,18 +612,65 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
   throw notFound("API route");
 }
 
-function writeJson(res, statusCode, value) {
+function writeJson(res, statusCode, value, headers = {}) {
   const body = JSON.stringify(value);
   res.writeHead(statusCode, {
     ...apiHeaders,
-    "Content-Length": Buffer.byteLength(body)
+    "Content-Length": Buffer.byteLength(body),
+    ...headers
   });
   res.end(body);
 }
 
-function getBearerToken(req) {
+function authResponse(auth, body = {}) {
+  const { token, ...publicAuth } = auth;
+  return body.returnToken === true ? { ...publicAuth, token } : publicAuth;
+}
+
+function getRequestToken(req) {
   const header = String(req.headers.authorization || "");
   if (header.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  return cookieValue(req, SESSION_COOKIE_NAME);
+}
+
+function cookieValue(req, name) {
+  const cookies = String(req.headers.cookie || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const prefix = `${name}=`;
+  const cookie = cookies.find((part) => part.startsWith(prefix));
+  return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
+}
+
+function sessionCookie(token, req) {
+  return [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Strict",
+    "Max-Age=43200",
+    secureCookieAttribute(req)
+  ].filter(Boolean).join("; ");
+}
+
+function clearSessionCookie(req) {
+  return [
+    `${SESSION_COOKIE_NAME}=`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Strict",
+    "Max-Age=0",
+    secureCookieAttribute(req)
+  ].filter(Boolean).join("; ");
+}
+
+function secureCookieAttribute(req) {
+  if (process.env.PATCHPROOF_SECURE_COOKIES === "false") return "";
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  if (forwardedProto === "https" || req.socket.encrypted || process.env.NODE_ENV === "production") {
+    return "Secure";
+  }
   return "";
 }
 
@@ -690,13 +746,10 @@ function scheduleInlineRun({ store, queue, artifactStore, payload }) {
 }
 
 function contentSecurityPolicy() {
-  const scriptSrc = process.env.PATCHPROOF_ALLOW_BROWSER_EVAL === "true"
-    ? "script-src 'self' 'unsafe-eval'"
-    : "script-src 'self'";
   return [
     "default-src 'self'",
-    scriptSrc,
-    "worker-src 'self'",
+    "script-src 'self'",
+    "worker-src 'none'",
     "style-src 'self'",
     "connect-src 'self'",
     "base-uri 'none'",

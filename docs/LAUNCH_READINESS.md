@@ -1,18 +1,18 @@
 # Launch Readiness
 
-Status reviewed against source and configuration on 2026-06-15.
+Status reviewed against source and configuration on 2026-06-16.
 
 ## Implemented In This Pass
 
 - OpenAI-compatible, Azure OpenAI, and local chat-completions candidate generation for queued runs.
 - Local CLI model candidate generation behind explicit `--model` or repository config.
-- Repository `init`, `doctor`, checkout inspection, simple Jest/Vitest/node:test/pytest assertion extraction, and certified function patch application.
+- Repository `init`, `doctor`, checkout inspection, AST-backed JavaScript/TypeScript source extraction, AST-backed simple Jest/Vitest/node:test/pytest assertion extraction, and certified function patch application.
 - Provider credentials remain outside the isolated verifier; certificates store hashed provenance.
 - Model generation reports prompt/response size metadata and enforces `maxPromptChars`.
 - Expanded Python local repair operators for common string, collection, range, and exception-oriented function bugs.
 - Model candidates are included in deterministic replay input and validated like local-template candidates.
 - Certificate verification compares the complete deterministic certificate, excluding only generation time.
-- Candidate, test, finite-domain, counterexample, mutation, and evidence thresholds are enforced.
+- Candidate, test, finite-domain, generated property-case, counterexample, token-aware mutation, and evidence thresholds are enforced.
 - GitHub Action verification no longer requires installing SaaS dependencies and avoids direct input interpolation.
 - Production encryption keys reject missing, short, and placeholder values.
 - GitHub webhooks fail closed when no signing secret is configured.
@@ -21,12 +21,14 @@ Status reviewed against source and configuration on 2026-06-15.
 - Queued runners default to Docker isolation; the local inline demo path explicitly opts into process isolation.
 - The default Docker runner image tag, package version, and health endpoint version are aligned at `0.4.1`.
 - Session bearer tokens are stored as server-side hashes in JSON and Postgres stores.
-- The server CSP removes `unsafe-eval` by default; browser eval fallback is opt-in through `PATCHPROOF_ALLOW_BROWSER_EVAL=true`.
+- Browser SaaS sessions use same-origin `HttpOnly` `SameSite=Strict` cookies while API keys still support bearer-token automation.
+- Browser-worker verification has been removed; UI runs go through the server/CLI isolated runners.
+- The server CSP removes `unsafe-eval` and sets `worker-src 'none'`.
+- Redis and memory queues use leased jobs, acknowledgements, expired-lease recovery, retry limits, and dead-letter tracking.
 
 ## P0 Before Public Production
 
 - Do not expose anonymous `POST /api/run` as a hostile multi-tenant service. Complete an independent sandbox review and move public execution to gVisor, Kata, or microVM isolation.
-- Replace the Redis `BLPOP` queue with leased jobs, retry limits, heartbeats, and a dead-letter queue. A worker crash can currently lose a claimed job.
 - Run end-to-end CI against Postgres, Redis, S3/MinIO, and the Docker runner. Current tests primarily use in-memory/local substitutes.
 - Treat Docker socket access as root-equivalent. Use dedicated runner hosts and never co-locate untrusted workloads or control-plane secrets.
 - Move Kubernetes secrets out of Helm values into Kubernetes Secrets or an external secret manager.
@@ -56,11 +58,11 @@ Status reviewed against source and configuration on 2026-06-15.
 ## P2 Product Completeness
 
 - Replace the simple source-token denylist with a stronger parser-based policy and hardened execution boundary.
-- Broaden Python beyond standalone restricted functions only after dependency isolation and full pytest execution adapters exist. TypeScript still requires its own execution path.
-- Add richer generated domains, property-based generators, coverage feedback, and pluggable mutation engines.
+- Broaden Python beyond standalone restricted functions only after dependency isolation and full pytest execution adapters exist. TypeScript repository targets are normalized into JavaScript verifier input for function-level targets; a native TypeScript verifier remains future work.
+- Add coverage feedback and pluggable mutation engines for broader assurance beyond the current deterministic property cases and token-aware mutation.
 - Version the HTTP API and publish an OpenAPI specification.
 - Add billing/quotas only after job accounting and abuse controls are reliable.
 
 ## Current Publish Position
 
-The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and named-function JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation, queue reliability, integration testing, secret management, certificate trust, and security-review items are complete.
+The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and function-level JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation, integration testing, secret management, certificate trust, and security-review items are complete.

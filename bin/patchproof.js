@@ -5,9 +5,8 @@ import { PATCHPROOF_VERSION } from "../engine.js";
 import {
   createInputFromExample,
   examples,
-  runPatchProof,
-  verifyCertificate
 } from "../runtime.js";
+import { runPatchProofIsolated, verifyPatchProofIsolated } from "../sandbox/hosted-runner.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "help";
@@ -78,7 +77,9 @@ async function runCommand(runArgs) {
       : await inputFromRepositoryTarget({ repoRoot, configPath, targetId });
   input.executionMode = targetId ? "repository-adapter-cli" : "node-cli";
   input = await maybeAttachModelCandidates(input, { args: runArgs, repoRoot, configPath, targetId });
-  const result = runPatchProof(input);
+  const runnerResult = await runPatchProofIsolated(input);
+  if (!runnerResult.ok) throw new Error(runnerResult.error?.message || "Isolated runner failed.");
+  const result = runnerResult.result;
   const certificateJson = JSON.stringify(result.certificate, null, 2);
   let applyResult = null;
 
@@ -204,7 +205,9 @@ async function verifyCommand(verifyArgs) {
   if (!certPath) throw new Error("verify requires a certificate path.");
 
   const certificate = JSON.parse(await readFile(certPath, "utf8"));
-  const report = verifyCertificate(certificate);
+  const runnerResult = await verifyPatchProofIsolated(certificate);
+  if (!runnerResult.ok) throw new Error(runnerResult.error?.message || "Isolated verification failed.");
+  const report = runnerResult.result;
 
   if (jsonMode) {
     console.log(JSON.stringify(report, null, 2));

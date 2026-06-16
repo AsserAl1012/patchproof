@@ -14,11 +14,24 @@ export const HOSTED_LIMITS = Object.freeze({
 });
 
 export function runPatchProofIsolated(input, options = {}) {
+  return runIsolatedOperation("run", input, options);
+}
+
+export function verifyPatchProofIsolated(certificate, options = {}) {
+  return runIsolatedOperation("verify", certificate, options);
+}
+
+function runIsolatedOperation(operation, value, options = {}) {
   const limits = {
     ...HOSTED_LIMITS,
     ...(options.limits || {})
   };
-  const serialized = JSON.stringify(input || {});
+  const serialized = JSON.stringify({
+    operation,
+    value: operation === "verify"
+      ? value
+      : { ...(value || {}), executionMode: "isolated-node-permission-runner" }
+  });
   if (Buffer.byteLength(serialized) > limits.maxInputBytes) {
     return Promise.resolve({
       ok: false,
@@ -30,7 +43,11 @@ export function runPatchProofIsolated(input, options = {}) {
   }
 
   return new Promise((resolveResult) => {
-    const language = String(input?.language || "javascript").toLowerCase();
+    const language = String(
+      operation === "verify"
+        ? value?.target?.language || value?.replay?.input?.language || "javascript"
+        : value?.language || "javascript"
+    ).toLowerCase();
     const python = language === "python";
     const executable = python
       ? process.env.PATCHPROOF_PYTHON_BIN || (process.platform === "win32" ? "python" : "python3")
@@ -142,10 +159,12 @@ export function runPatchProofIsolated(input, options = {}) {
     child.stdin.end(
       python
         ? JSON.stringify({
-            operation: "run",
-            value: { ...input, executionMode: "isolated-python-process-runner" }
+            operation,
+            value: operation === "verify"
+              ? value
+              : { ...value, executionMode: "isolated-python-process-runner" }
           })
-        : serialized
+      : serialized
     );
   });
 }

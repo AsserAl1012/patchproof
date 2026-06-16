@@ -119,16 +119,28 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
       artifacts,
       resourceUsage: result.resourceUsage || {}
     });
+    await queue.ack?.(payload);
     await maybePostGitHubCompletion({ store, settings, detail, completed, certificate });
     return { ok: true, ...completed };
   } catch (error) {
     const runId = detail?.run?.id || payload.runId;
+    const retryable = isRetryableJobError(error, detail);
+    const queueResult = await queue.fail?.(payload, error, { retry: retryable }) || { retry: false, deadLettered: true };
+    if (queueResult.retry) {
+      await store.markJobRetrying?.({
+        jobId: payload.jobId,
+        message: error.message,
+        logs: [...logs, error.message],
+        nextAttempt: Number(queueResult.attempts || payload.queueAttempt || 1) + 1
+      }).catch?.(() => {});
+      return { ok: false, error, retry: true, queue: queueResult };
+    }
     await store.failRun?.({
       runId,
       message: error.message,
       logs: [...logs, error.message]
-    });
-    return { ok: false, error };
+    }).catch?.(() => {});
+    return { ok: false, error, retry: false, queue: queueResult };
   }
 }
 
@@ -196,4 +208,13 @@ function positiveInteger(value, fallback) {
 function boundedScore(value, fallback) {
   const result = Number(value ?? fallback);
   return Number.isFinite(result) && result >= 0 && result <= 1 ? result : Number(fallback);
+}
+
+function isRetryableJobError(error, detail) {
+  const message = String(error?.message || "");
+  if (!detail) return false;
+  if (/was not found|authentication required|lacks permission/i.test(message)) return false;
+  if (/unsafe source|unsafe precondition|unsafe may-change|unsafe postcondition/i.test(message)) return false;
+  if (/tests must be valid json|source must declare|unsupported language/i.test(message)) return false;
+  return true;
 }

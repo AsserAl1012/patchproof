@@ -156,6 +156,98 @@ targets:
   assert.equal(result.certificate.status, "certified");
 });
 
+test("repository adapter extracts arrow function and TypeScript targets", async () => {
+  const repo = await fixtureRepo("repo-ts-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "src", "math.ts"), `export const increment = (value: number): number => value;
+`, "utf8");
+  await writeFile(join(repo, "tests", "increment.patchproof.json"), JSON.stringify([
+    { name: "increments", args: [1], expect: 2 },
+    { name: "keeps negative", args: [-2], expect: -1 }
+  ], null, 2), "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: typescript
+  allowedPaths:
+    - src/**
+    - tests/**
+targets:
+  increment:
+    source: src/math.ts
+    function: increment
+    tests: tests/increment.patchproof.json
+    bugReport: increment should add one.
+    mayChange: true
+    postcondition: result === args[0] + 1
+`, "utf8");
+
+  const input = await createInputFromRepositoryTarget({ repoRoot: repo, targetId: "increment" });
+  assert.equal(input.language, "javascript");
+  assert.match(input.source, /^function increment\(value\)/);
+  assert.doesNotMatch(input.source, /number/);
+  const result = runPatchProof({
+    ...input,
+    candidatePatches: ["function increment(value) { return value + 1; }"]
+  });
+  assert.equal(result.certificate.status, "certified");
+});
+
+test("repository adapter extracts object methods and AST framework literals", async () => {
+  const repo = await fixtureRepo("repo-method-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "src", "numbers.js"), `export const numbers = {
+  clamp(value, min, max) {
+    if (value < min) return min;
+    if (value > min) return max;
+    return value;
+  }
+};
+`, "utf8");
+  await writeFile(join(repo, "tests", "numbers.test.js"), `
+import { expect, test } from "vitest";
+test("clamp", () => {
+  expect(numbers.clamp(-5, 0, 10)).toEqual(0);
+  expect(numbers.clamp(12, 0, 10)).toEqual(10);
+  expect(numbers.clamp(6, 0, 10)).toEqual(6);
+  expect(numbers.clamp(1, 0, 10)).toEqual({ value: 1 }.value);
+});
+`, "utf8");
+
+  const extracted = await extractFrameworkTests({
+    repoRoot: repo,
+    testPath: "tests/numbers.test.js",
+    functionName: "clamp",
+    framework: "vitest"
+  });
+  assert.equal(extracted.length, 3);
+
+  await writeFile(join(repo, "tests", "clamp.patchproof.json"), JSON.stringify(extracted, null, 2), "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: javascript
+  allowedPaths:
+    - src/**
+    - tests/**
+targets:
+  clamp:
+    source: src/numbers.js
+    function: clamp
+    tests: tests/clamp.patchproof.json
+    bugReport: Upper guard compares value to min instead of max.
+    precondition: args[1] <= args[2]
+    mayChange: args[0] > args[1] && args[0] < args[2]
+    postcondition: result === Math.min(Math.max(args[0], args[1]), args[2])
+`, "utf8");
+  const input = await createInputFromRepositoryTarget({ repoRoot: repo, targetId: "clamp" });
+  assert.match(input.source, /^function clamp/);
+  const result = runPatchProof(input);
+  assert.equal(result.certificate.status, "certified");
+});
+
 test("repository adapter extracts simple pytest assertions", async () => {
   const repo = await fixtureRepo("repo-pytest-");
   await mkdir(join(repo, "tests"), { recursive: true });

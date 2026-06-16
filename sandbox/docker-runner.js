@@ -138,7 +138,10 @@ function runPatchProofInDocker(input, policy = {}, options = {}) {
             operation: "run",
             value: { ...input, executionMode: "isolated-python-docker-runner" }
           })
-        : serialized
+        : JSON.stringify({
+            operation: "run",
+            value: { ...input, executionMode: "isolated-node-docker-runner" }
+          })
     );
   });
 }

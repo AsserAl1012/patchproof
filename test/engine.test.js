@@ -146,6 +146,48 @@ test("honors configured domain, candidate, and evidence limits", () => {
   assert.match(result.selected.rejectionReasons.join(" "), /Evidence score was below 0\.99/);
 });
 
+test("generated property cases broaden the finite domain within caps", () => {
+  const result = runPatchProof({
+    source: `function clamp(value, min, max) {
+  if (value < min) return min;
+  if (value > min) return max;
+  return value;
+}`,
+    tests: [
+      { name: "above max", args: [12, 0, 10], expect: 10 },
+      { name: "in range", args: [6, 0, 10], expect: 6 }
+    ],
+    bugReport: "upper guard compares value to min",
+    precondition: "args[1] <= args[2]",
+    mayChange: "args[0] > args[1] && args[0] < args[2]",
+    postcondition: "result === Math.min(Math.max(args[0], args[1]), args[2])",
+    limits: { maxDomainSize: 80, propertyRuns: 40 }
+  });
+  assert.equal(result.certificate.behavioralEnvelope.finiteDomainSize, 80);
+});
+
+test("token-aware mutation does not mutate operators inside strings", () => {
+  const result = runPatchProof({
+    source: `function message(value) {
+  if (value > 0) return "value > zero";
+  return "zero";
+}`,
+    tests: [
+      { name: "positive", args: [1], expect: "ok" },
+      { name: "zero", args: [0], expect: "zero" }
+    ],
+    bugReport: "positive values should return ok",
+    mayChange: "args[0] > 0",
+    postcondition: "args[0] > 0 ? result === 'ok' : result === 'zero'",
+    candidatePatches: [`function message(value) {
+  if (value > 0) return "ok";
+  return "zero";
+}`]
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.ok(result.selected.mutation.survivors.every((label) => !label.includes("string")));
+});
+
 test("rejects invalid supplied candidates without failing certificate construction", () => {
   const input = {
     source: "function increment(value) { return value; }",

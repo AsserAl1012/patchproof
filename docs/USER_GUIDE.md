@@ -17,7 +17,7 @@ Python input uses:
 }
 ```
 
-Python support currently accepts exactly one named function, JSON-compatible arguments and results, normal built-in exceptions such as `ValueError`, and Python expressions for the behavioral envelope. Imports, decorators, classes, filesystem/network APIs, private attributes, and unsafe dynamic builtins are rejected. Use the CLI or server; browser-only fallback cannot execute Python.
+Python support currently accepts exactly one named function, JSON-compatible arguments and results, normal built-in exceptions such as `ValueError`, and Python expressions for the behavioral envelope. Imports, decorators, classes, filesystem/network APIs, private attributes, and unsafe dynamic builtins are rejected. Use the CLI or server; browser-side verification is disabled.
 
 ## Purpose
 
@@ -313,7 +313,7 @@ assert.equal(clamp(6, 0, 10), 6);
 assert clamp(6, 0, 10) == 6
 ```
 
-PatchProof ignores complex framework tests that use variables, mocks, snapshots, async flows, custom matchers, or non-literal expected values. Those tests should be converted to `.patchproof.json` for now.
+JavaScript and Python framework extraction is AST-backed, but intentionally conservative. PatchProof ignores complex framework tests that use variables, mocks, snapshots, async flows, custom matchers, or non-literal expected values. Those tests should be converted to `.patchproof.json` for now.
 
 For Python targets, set `project.language: python` or `language: python` on the target and use Python expressions in the envelope:
 
@@ -367,13 +367,13 @@ Verification reproduces the run and compares run id, status, selected patch, evi
 
 ## Security Notes
 
-PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`, but token filtering is not a sandbox. Local quick-run mode uses a Node permission runner; browser-only worker fallback requires `PATCHPROOF_ALLOW_BROWSER_EVAL=true` and should be used only for local demos. Production project runs should use the queued Docker runner. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
+PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`, but token filtering is not a sandbox. Local quick-run mode and CLI runs use isolated runner processes; browser-side verification is disabled. Production project runs should use the queued Docker runner. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
 
 ## Current Limitations
 
-- No multi-file project repair yet; repository targets still extract one named function.
+- No multi-file project repair yet; repository targets still extract one configured function-level target.
 - Framework adapters only extract simple literal assertions; they do not execute the full Jest, Vitest, node:test, or pytest suite.
 - Python local repair templates cover common function-level bugs such as wrong upper-bound comparisons, slice/range off-by-one errors, whitespace slugification, missing increments, and returning `list.append(...)`.
-- No symbolic solver yet; the bounded proof is finite-domain differential validation.
-- Browser quick-run history is local-only; project runs are persisted by the SaaS backend.
+- No symbolic solver yet; the bounded proof is finite-domain differential validation with deterministic property-style generated cases.
+- Saved certificate history is local-only; project runs are persisted by the SaaS backend.
 - No support for async functions, network, filesystem, DOM, or database behavior.

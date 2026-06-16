@@ -397,6 +397,33 @@ export class PostgresSaasStore {
     return fromJobRow(updated.rows[0]);
   }
 
+  async markJobRetrying({ jobId, message, logs = [], nextAttempt = null }) {
+    await this.load();
+    const now = nowIso();
+    const current = await this.pool.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
+    const job = current.rows[0];
+    if (!job) throw statusError("Job not found.", 404);
+    const mergedLogs = [
+      ...(job.logs || []),
+      ...logs,
+      `retry scheduled${nextAttempt ? ` for attempt ${nextAttempt}` : ""}`
+    ];
+    const updated = await this.pool.query(
+      `UPDATE jobs
+       SET status = 'queued', phase = 'retrying', claimed_by = NULL, runner_id = NULL,
+           completed_at = NULL, exit_reason = $2, logs = $3
+       WHERE id = $1
+       RETURNING *`,
+      [jobId, message, JSON.stringify(mergedLogs)]
+    );
+    await this.pool.query("UPDATE runs SET status = 'queued', error = NULL, updated_at = $2 WHERE id = $1", [job.run_id, now]);
+    await this.pool.query(
+      "UPDATE job_attempts SET status = 'retrying', completed_at = $2, exit_reason = $3 WHERE run_id = $1 AND completed_at IS NULL",
+      [job.run_id, now, message]
+    );
+    return fromJobRow(updated.rows[0]);
+  }
+
   async completeRun({ runId, certificate, logs = [], status = null, artifacts = [], resourceUsage = {} }) {
     await this.load();
     const client = await this.pool.connect();

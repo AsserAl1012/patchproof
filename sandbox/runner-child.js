@@ -1,5 +1,5 @@
 import { stdin, stdout } from "node:process";
-import { runPatchProof } from "../runtime.js";
+import { runPatchProof, verifyCertificate } from "../runtime.js";
 
 let input = "";
 
@@ -10,11 +10,13 @@ stdin.on("data", (chunk) => {
 
 stdin.on("end", () => {
   try {
-    const payload = {
-      ...JSON.parse(input || "{}"),
-      executionMode: "isolated-node-permission-runner"
-    };
-    const result = runPatchProof(payload);
+    const request = JSON.parse(input || "{}");
+    const result = request?.operation === "verify"
+      ? verifyCertificate(request.value)
+      : runPatchProof({
+          ...(request?.operation === "run" ? request.value : request),
+          executionMode: "isolated-node-permission-runner"
+        });
     stdout.write(
       JSON.stringify({
         ok: true,

@@ -34,12 +34,13 @@ async function waitForRun(baseUrl, runId, { token, orgId }) {
   throw new Error(`Run ${runId} did not finish.`);
 }
 
-async function request(baseUrl, path, { method = "GET", token = "", orgId = "", body = null } = {}) {
+async function request(baseUrl, path, { method = "GET", token = "", cookie = "", orgId = "", body = null } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
       ...(body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(cookie ? { Cookie: cookie } : {}),
       ...(orgId ? { "X-PatchProof-Org": orgId } : {})
     },
     body: body ? JSON.stringify(body) : undefined
@@ -62,7 +63,7 @@ async function bootstrap(baseUrl) {
   assert.equal(boot.response.status, 201);
   const login = await request(baseUrl, "/api/auth/login", {
     method: "POST",
-    body: { email: "owner@example.com", password: "correct horse battery staple" }
+    body: { email: "owner@example.com", password: "correct horse battery staple", returnToken: true }
   });
   assert.equal(login.response.status, 200);
   return { token: login.json.token, orgId: login.json.orgs[0].id };
@@ -77,6 +78,39 @@ test("JSON sessions store token hashes instead of bearer tokens", async () => {
     assert.equal(store.state.sessions[0].token, undefined);
     assert.equal(store.state.sessions[0].tokenHash.length, 64);
     assert.notEqual(store.state.sessions[0].tokenHash, token);
+  } finally {
+    server.close();
+  }
+});
+
+test("browser sessions can authenticate with HttpOnly cookies", async () => {
+  const { server, baseUrl } = await startSaasServer();
+  try {
+    await request(baseUrl, "/api/bootstrap", {
+      method: "POST",
+      body: {
+        email: "owner@example.com",
+        password: "correct horse battery staple",
+        name: "Owner",
+        orgName: "Acme"
+      }
+    });
+    const login = await request(baseUrl, "/api/auth/login", {
+      method: "POST",
+      body: { email: "owner@example.com", password: "correct horse battery staple" }
+    });
+    const cookie = login.response.headers.get("set-cookie");
+    assert.equal(login.response.status, 200);
+    assert.match(cookie, /patchproof_session=/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Strict/);
+    assert.equal(login.json.token, undefined);
+    const sessionCookie = cookie.split(";")[0];
+    const me = await request(baseUrl, "/api/me", { cookie: sessionCookie });
+    assert.equal(me.response.status, 200);
+    assert.equal(me.json.user.email, "owner@example.com");
+    const logout = await request(baseUrl, "/api/auth/logout", { method: "POST", cookie: sessionCookie });
+    assert.match(logout.response.headers.get("set-cookie"), /Max-Age=0/);
   } finally {
     server.close();
   }

@@ -209,8 +209,27 @@ test("memory queue enqueues and claims jobs", async () => {
   const queue = new MemoryJobQueue();
   await queue.enqueue({ jobId: "job_1", runId: "run_1" });
   assert.equal(await queue.depth(), 1);
-  assert.deepEqual(await queue.claim({ timeoutSeconds: 0 }), { jobId: "job_1", runId: "run_1" });
+  const claimed = await queue.claim({ timeoutSeconds: 0 });
+  assert.equal(claimed.jobId, "job_1");
+  assert.equal(claimed.runId, "run_1");
+  assert.ok(claimed.leaseId);
   assert.equal(await queue.depth(), 0);
+  assert.equal(await queue.inFlightDepth(), 1);
+  assert.deepEqual(await queue.ack(claimed), { acked: true });
+  assert.equal(await queue.inFlightDepth(), 0);
+});
+
+test("memory queue recovers expired leases and dead-letters exhausted jobs", async () => {
+  const queue = new MemoryJobQueue({ leaseMs: 1, maxAttempts: 2 });
+  await queue.enqueue({ jobId: "job_lease", runId: "run_lease" });
+  const first = await queue.claim({ timeoutSeconds: 0, leaseMs: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(await queue.depth(), 1);
+  const second = await queue.claim({ timeoutSeconds: 0, leaseMs: 1 });
+  assert.equal(second.queueAttempt, 2);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(await queue.depth(), 0);
+  assert.equal(await queue.deadDepth(), 1);
 });
 
 test("Docker runner arguments enforce production isolation", () => {

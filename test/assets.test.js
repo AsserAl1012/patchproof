@@ -12,9 +12,10 @@ test("html references production assets", async () => {
   assert.match(html, /importCertInput/);
 });
 
-test("worker delegates to engine", async () => {
+test("browser worker execution is disabled", async () => {
   const worker = await readFile("worker.js", "utf8");
-  assert.match(worker, /runPatchProof/);
+  assert.doesNotMatch(worker, /runPatchProof/);
+  assert.match(worker, /disabled/);
   assert.match(worker, /postMessage/);
 });
 

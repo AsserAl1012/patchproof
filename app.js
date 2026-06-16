@@ -1,4 +1,4 @@
-import { examples, runPatchProof } from "./engine.js";
+import { examples } from "./engine.js";
 import { pythonExamples } from "./python-examples.js";
 
 const allExamples = [...examples, ...pythonExamples];
@@ -165,9 +165,7 @@ function runEngine() {
 }
 
 async function runVerifier(payload) {
-  const apiResult = await runViaApi(payload);
-  if (apiResult) return apiResult;
-  return runInWorker(payload);
+  return runViaApi(payload);
 }
 
 async function runViaApi(payload) {
@@ -184,46 +182,11 @@ async function runViaApi(payload) {
     }
     return body.result;
   } catch (error) {
-    if (error instanceof TypeError) return null;
+    if (error instanceof TypeError) {
+      throw new Error("PatchProof verification requires the local server or CLI. Browser-only execution is disabled for safety.");
+    }
     throw error;
   }
-}
-
-function runInWorker(payload) {
-  if (payload.language === "python") {
-    return Promise.reject(new Error("Python verification requires the PatchProof server or CLI; browser-worker fallback supports JavaScript only."));
-  }
-  if (!window.Worker) {
-    return Promise.resolve(runPatchProof(payload));
-  }
-
-  return new Promise((resolve, reject) => {
-    const worker = new Worker("./worker.js", { type: "module" });
-    const timeout = window.setTimeout(() => {
-      worker.terminate();
-      reject(new Error("PatchProof timed out. Check for infinite loops or shrink the input domain."));
-    }, 8000);
-
-    worker.onmessage = (event) => {
-      window.clearTimeout(timeout);
-      worker.terminate();
-      if (event.data.ok) {
-        resolve(event.data.result);
-        return;
-      }
-      const error = new Error(event.data.error.message);
-      error.stack = event.data.error.stack;
-      reject(error);
-    };
-
-    worker.onerror = (event) => {
-      window.clearTimeout(timeout);
-      worker.terminate();
-      reject(new Error(event.message || "Worker execution failed."));
-    };
-
-    worker.postMessage(payload);
-  });
 }
 
 function renderResult(result) {
@@ -435,7 +398,7 @@ async function bootstrapAdmin() {
       },
       auth: false
     });
-    elements.authState.textContent = `Bootstrapped ${response.org.name}`;
+    elements.authState.textContent = `Bootstrapped ${response.orgs?.[0]?.name || "organization"}`;
     await login();
   } catch (error) {
     elements.authState.textContent = error.message;
@@ -452,8 +415,8 @@ async function login() {
       },
       auth: false
     });
-    auth = { token: response.token, user: response.user, orgs: response.orgs, orgId: response.orgs[0]?.id };
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+    auth = { user: response.user, orgs: response.orgs, orgId: response.orgs[0]?.id };
+    persistAuth();
     await refreshSession();
   } catch (error) {
     elements.authState.textContent = error.message;
@@ -462,7 +425,7 @@ async function login() {
 
 async function logout() {
   try {
-    if (auth?.token) await api("/api/auth/logout", { method: "POST" });
+    await api("/api/auth/logout", { method: "POST" });
   } catch {
     // Local logout should still clear browser state.
   }
@@ -474,16 +437,15 @@ async function logout() {
 }
 
 async function refreshSession() {
-  if (!auth?.token) {
-    renderSaasState();
-    return;
-  }
   try {
     const me = await api("/api/me");
-    auth.user = me.user;
-    auth.orgs = me.orgs;
-    auth.orgId ||= me.orgs[0]?.id;
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+    auth = {
+      ...(auth || {}),
+      user: me.user,
+      orgs: me.orgs,
+      orgId: auth?.orgId || me.orgs[0]?.id
+    };
+    persistAuth();
     renderSaasState();
     await loadProjects();
   } catch {
@@ -494,7 +456,7 @@ async function refreshSession() {
 }
 
 function renderSaasState() {
-  if (!auth?.token) {
+  if (!auth?.user) {
     elements.authState.textContent = "Not signed in";
     elements.orgLabel.textContent = "No org";
     elements.projectList.textContent = "Login to load projects.";
@@ -549,7 +511,7 @@ async function linkGithubProject() {
 }
 
 async function loadProjects() {
-  if (!auth?.token) return;
+  if (!auth?.user) return;
   const response = await api("/api/projects");
   if (!response.projects.length) {
     elements.projectList.textContent = "No projects yet.";
@@ -648,7 +610,7 @@ async function loadRunDetail(runId) {
 function startRunPolling() {
   if (runPollTimer || !selectedProject) return;
   runPollTimer = window.setInterval(async () => {
-    if (!auth?.token || !selectedProject) {
+    if (!auth?.user || !selectedProject) {
       stopRunPolling();
       return;
     }
@@ -726,9 +688,9 @@ async function loadAudit() {
 async function api(path, { method = "GET", body = null, auth: useAuth = true } = {}) {
   const response = await fetch(path, {
     method,
+    credentials: "same-origin",
     headers: {
       ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(useAuth && auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
       ...(useAuth && auth?.orgId ? { "X-PatchProof-Org": auth.orgId } : {})
     },
     body: body ? JSON.stringify(body) : undefined
@@ -742,10 +704,19 @@ async function api(path, { method = "GET", body = null, auth: useAuth = true } =
 
 function readAuth() {
   try {
-    return JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    const value = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    if (!value || typeof value !== "object") return null;
+    const { token, ...rest } = value;
+    return rest.user ? rest : null;
   } catch {
     return null;
   }
+}
+
+function persistAuth() {
+  if (!auth?.user) return;
+  const { token, ...safeAuth } = auth;
+  localStorage.setItem(AUTH_KEY, JSON.stringify(safeAuth));
 }
 
 function findSelectedCandidate() {

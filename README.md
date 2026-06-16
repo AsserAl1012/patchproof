@@ -1,6 +1,6 @@
 # PatchProof
 
-PatchProof is a private AI bug-fixing and patch-verification system. It proposes candidate JavaScript and Python function patches, executes tests, checks bounded behavioral preservation, runs postcondition checks, performs simple mutation analysis, and emits replayable validation certificates.
+PatchProof is a private AI bug-fixing and patch-verification system. It proposes candidate JavaScript and Python function patches, executes tests in isolated runners, checks bounded behavioral preservation, runs postcondition checks, performs token-aware mutation analysis, and emits replayable validation certificates.
 
 The current build supports both local quick-run mode and self-hosted private SaaS mode with login, organizations, projects, Postgres-backed runs, Redis queued jobs, Docker-capable runner workers, S3/MinIO artifact storage, audit logs, admin settings, GitHub App slash-command callbacks, and replayable certificates.
 
@@ -105,22 +105,22 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 
 ## Prototype Boundaries
 
-- JavaScript: functions declared as `function name(...) { ... }`
+- JavaScript/TypeScript repository targets: AST-backed extraction for function declarations, exported functions, const function expressions, arrow functions, object methods, class methods, and TypeScript function signatures normalized into verifier JavaScript
 - Python: one named `def` function with JSON-compatible inputs/results; imports, classes, decorators, dynamic builtins, and private attributes are rejected, while normal built-in exceptions such as `ValueError` can be raised
-- Test format: JSON array with `name`, `args`, and `expect`, plus conservative extraction from simple Jest, Vitest, node:test, and pytest literal assertions
+- Test format: JSON array with `name`, `args`, and `expect`, plus conservative AST-backed extraction from simple Jest, Vitest, node:test, and pytest literal assertions
 - Envelope format: JavaScript expressions for JavaScript runs and Python expressions for Python runs
 - Repository adapter: `patchproof inspect`, `init`, and `doctor` profile a checkout and `patchproof.yml` can map source/test files or simple framework assertions into function-level PatchProof targets
-- Proof mode: finite-domain bounded equivalence, not whole-program formal verification
+- Proof mode: finite-domain bounded equivalence with boundary cases, seeded generated property-style cases, and token-aware mutation checks; not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
-- Isolation: production runner supports Docker one-container-per-job isolation; local quick-run keeps the Node permission runner
+- Isolation: production runner supports Docker one-container-per-job isolation; CLI and local quick-run use isolated runner processes; browser-side verification is disabled
 - Repair model: language-specific local repair templates, plus explicitly configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in CLI/SaaS runs with prompt-size controls and usage estimates
 
-Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Browser-worker fallback remains JavaScript-only. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
+Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
 
 See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY.md](docs/SECURITY.md) for the security model, [docs/PUBLISHING.md](docs/PUBLISHING.md) for release steps, and [docs/LAUNCH_READINESS.md](docs/LAUNCH_READINESS.md) for the production gap analysis.
 
 ## Production Private SaaS
 
-The browser app uses authenticated SaaS APIs for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued in Redis, executed by `patchproof runner`, and stored as hash-checked artifacts. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
+The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
 
 For deployment notes, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md), and [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).

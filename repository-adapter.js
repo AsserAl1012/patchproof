@@ -1,8 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse as parseBabel } from "@babel/parser";
+import { transformSync } from "@babel/core";
 import { parsePatchproofConfig } from "./saas/config.js";
 import { languageOf } from "./runtime.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const pytestExtractor = resolve(here, "sandbox", "pytest-extractor.py");
 
 const SKIP_DIRECTORIES = new Set([
   ".git",
@@ -182,10 +188,7 @@ export async function createInputFromRepositoryTarget(options = {}) {
   const targetId = selectTargetId(targets, options.targetId);
   const target = targets[targetId];
   const configuredLanguage = String(target.language || config.project.language || "javascript").toLowerCase();
-  if (configuredLanguage === "typescript") {
-    throw new Error("Repository adapter does not support TypeScript targets yet.");
-  }
-  const language = languageOf({ language: configuredLanguage });
+  const language = configuredLanguage === "typescript" ? "javascript" : languageOf({ language: configuredLanguage });
 
   const sourcePath = target.source || target.sourcePath || target.file;
   const testsPath = target.tests || target.testsPath || (String(target.testFile || "").endsWith(".patchproof.json") ? target.testFile : "");
@@ -248,7 +251,7 @@ export async function applyCertificatePatchToRepositoryTarget(options = {}) {
   const targetId = selectTargetId(targets, options.targetId || certificate.replay?.input?.repository?.target);
   const target = targets[targetId];
   const configuredLanguage = String(target.language || config.project.language || certificate.target?.language || "javascript").toLowerCase();
-  const language = languageOf({ language: configuredLanguage });
+  const language = configuredLanguage === "typescript" ? "javascript" : languageOf({ language: configuredLanguage });
   const sourcePath = target.source || target.sourcePath || target.file;
   if (!sourcePath) throw new Error(`Repository target '${targetId}' is missing source.`);
   assertAllowedTargetPath(config, repoRoot, sourcePath, "source");
@@ -404,7 +407,7 @@ async function inferSingleFunctionName(repoRoot, sourcePath, language) {
     const text = await readFile(resolveRepoPath(repoRoot, sourcePath, "source"), "utf8");
     const matches = language === "python"
       ? [...text.matchAll(/^def\s+([A-Za-z_]\w*)\s*\(/gm)].map((match) => match[1])
-      : [...text.matchAll(/(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map((match) => match[1]);
+      : listJavaScriptFunctionCandidates(text, sourcePath).map((candidate) => candidate.functionName);
     return matches.length === 1 ? matches[0] : "";
   } catch {
     return "";
@@ -639,35 +642,157 @@ function normalizeFramework(framework) {
   return value || "unknown";
 }
 
+function parseJavaScriptModule(source, sourcePath) {
+  try {
+    return parseBabel(String(source || ""), {
+      sourceType: "unambiguous",
+      errorRecovery: false,
+      plugins: [
+        "typescript",
+        "jsx",
+        "classProperties",
+        "classPrivateProperties",
+        "classPrivateMethods",
+        "objectRestSpread",
+        "optionalChaining",
+        "nullishCoalescingOperator",
+        "decorators-legacy"
+      ]
+    });
+  } catch (error) {
+    throw new Error(`Could not parse JavaScript/TypeScript in ${sourcePath}: ${error.message}`);
+  }
+}
+
+function walkAst(node, visit, parent = null) {
+  if (!node || typeof node !== "object") return;
+  if (typeof node.type === "string") visit(node, parent);
+  for (const [key, value] of Object.entries(node)) {
+    if (["loc", "start", "end", "extra", "leadingComments", "trailingComments", "innerComments"].includes(key)) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) walkAst(item, visit, node);
+    } else if (value && typeof value === "object" && typeof value.type === "string") {
+      walkAst(value, visit, node);
+    }
+  }
+}
+
 function parseJavaScriptFrameworkAssertions(text, functionName, framework) {
   const tests = [];
   const source = String(text || "");
-  const name = escapeRegex(functionName);
-  const expectPattern = new RegExp(
-    `expect\\s*\\(\\s*${name}\\s*\\(([^\\)]*)\\)\\s*\\)\\s*\\.\\s*(?:toBe|toEqual|toStrictEqual)\\s*\\(([^\\n;]*)\\)`,
-    "g"
-  );
-  const assertPattern = new RegExp(
-    `assert\\s*\\.\\s*(?:equal|strictEqual|deepEqual|deepStrictEqual)\\s*\\(\\s*${name}\\s*\\(([^\\)]*)\\)\\s*,\\s*([^\\n;]*)\\)`,
-    "g"
-  );
-  for (const match of source.matchAll(expectPattern)) {
-    pushExtractedTest(tests, functionName, match[1], match[2], framework);
-  }
-  for (const match of source.matchAll(assertPattern)) {
-    pushExtractedTest(tests, functionName, match[1], match[2], framework);
-  }
+  const ast = parseJavaScriptModule(source, "framework tests");
+  walkAst(ast, (node) => {
+    if (node.type !== "CallExpression") return;
+    const expectCase = extractExpectAssertion(node, functionName);
+    if (expectCase) {
+      tests.push({
+        name: `${framework} ${functionName} case ${tests.length + 1}`,
+        ...expectCase
+      });
+      return;
+    }
+    const assertCase = extractAssertAssertion(node, functionName);
+    if (assertCase) {
+      tests.push({
+        name: `${framework} ${functionName} case ${tests.length + 1}`,
+        ...assertCase
+      });
+    }
+  });
   return tests;
 }
 
-function parsePytestAssertions(text, functionName) {
-  const tests = [];
-  const name = escapeRegex(functionName);
-  const pattern = new RegExp(`assert\\s+${name}\\s*\\(([^\\)]*)\\)\\s*==\\s*([^#\\n]+)`, "g");
-  for (const match of String(text || "").matchAll(pattern)) {
-    pushExtractedTest(tests, functionName, match[1], match[2], "pytest");
+function extractExpectAssertion(node, functionName) {
+  if (node.callee?.type !== "MemberExpression") return null;
+  const matcher = memberPropertyName(node.callee);
+  if (!["toBe", "toEqual", "toStrictEqual"].includes(matcher)) return null;
+  const expectCall = node.callee.object;
+  if (expectCall?.type !== "CallExpression" || expectCall.callee?.name !== "expect") return null;
+  const actualCall = expectCall.arguments?.[0];
+  if (!isTargetCall(actualCall, functionName)) return null;
+  if (node.arguments.length !== 1) return null;
+  return literalTestCase(actualCall.arguments, node.arguments[0]);
+}
+
+function extractAssertAssertion(node, functionName) {
+  if (node.callee?.type !== "MemberExpression") return null;
+  if (node.callee.object?.name !== "assert") return null;
+  const matcher = memberPropertyName(node.callee);
+  if (!["equal", "strictEqual", "deepEqual", "deepStrictEqual"].includes(matcher)) return null;
+  const actualCall = node.arguments?.[0];
+  if (!isTargetCall(actualCall, functionName)) return null;
+  if (node.arguments.length < 2) return null;
+  return literalTestCase(actualCall.arguments, node.arguments[1]);
+}
+
+function isTargetCall(node, functionName) {
+  if (node?.type !== "CallExpression") return false;
+  if (node.callee?.type === "Identifier") return node.callee.name === functionName;
+  if (node.callee?.type === "MemberExpression") return memberPropertyName(node.callee) === functionName;
+  return false;
+}
+
+function literalTestCase(argsNodes, expectedNode) {
+  try {
+    return {
+      args: argsNodes.map(evaluateJavaScriptLiteral),
+      expect: evaluateJavaScriptLiteral(expectedNode)
+    };
+  } catch {
+    return null;
   }
-  return tests;
+}
+
+function evaluateJavaScriptLiteral(node) {
+  if (!node) throw new Error("missing literal");
+  if (node.type === "NumericLiteral" || node.type === "StringLiteral" || node.type === "BooleanLiteral") return node.value;
+  if (node.type === "NullLiteral") return null;
+  if (node.type === "Identifier" && node.name === "undefined") return undefined;
+  if (node.type === "UnaryExpression" && node.operator === "-") {
+    const value = evaluateJavaScriptLiteral(node.argument);
+    if (typeof value !== "number") throw new Error("unsupported unary literal");
+    return -value;
+  }
+  if (node.type === "ArrayExpression") return node.elements.map(evaluateJavaScriptLiteral);
+  if (node.type === "ObjectExpression") {
+    const object = {};
+    for (const property of node.properties) {
+      if (property.type !== "ObjectProperty" || property.computed) throw new Error("unsupported object literal");
+      const key = property.key.type === "Identifier" ? property.key.name : evaluateJavaScriptLiteral(property.key);
+      object[key] = evaluateJavaScriptLiteral(property.value);
+    }
+    return object;
+  }
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis.map((quasi) => quasi.value.cooked).join("");
+  }
+  throw new Error(`unsupported literal: ${node.type}`);
+}
+
+function memberPropertyName(node) {
+  if (!node || node.type !== "MemberExpression") return "";
+  if (node.property?.type === "Identifier") return node.property.name;
+  if (node.property?.type === "StringLiteral") return node.property.value;
+  return "";
+}
+
+function parsePytestAssertions(text, functionName) {
+  const executable = process.env.PATCHPROOF_PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+  const result = spawnSync(executable, ["-I", "-S", pytestExtractor], {
+    input: JSON.stringify({ source: String(text || ""), functionName }),
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5000,
+    maxBuffer: 1024 * 1024
+  });
+  if (result.status !== 0 || result.error) {
+    return [];
+  }
+  try {
+    return JSON.parse(result.stdout || "{}").tests || [];
+  } catch {
+    return [];
+  }
 }
 
 function pushExtractedTest(tests, functionName, argsText, expectText, framework) {
@@ -830,30 +955,151 @@ function extractJavaScriptFunction(source, functionName, sourcePath) {
 }
 
 function extractJavaScriptFunctionSpan(source, functionName, sourcePath) {
-  const namePattern = functionName ? escapeRegex(functionName) : "[A-Za-z_$][\\w$]*";
-  const pattern = new RegExp(`(?:export\\s+)?(?:default\\s+)?function\\s+(${namePattern})\\s*\\(`, "g");
-  const matches = [...source.matchAll(pattern)];
-  if (!matches.length) {
+  const candidates = listJavaScriptFunctionCandidates(source, sourcePath)
+    .filter((candidate) => !functionName || candidate.functionName === functionName);
+  if (!candidates.length) {
     throw new Error(functionName
       ? `Could not find JavaScript function '${functionName}' in ${sourcePath}.`
       : `Could not find a named JavaScript function in ${sourcePath}.`);
   }
-  if (!functionName && matches.length > 1) {
+  if (!functionName && candidates.length > 1) {
     throw new Error(`Multiple JavaScript functions found in ${sourcePath}. Set function: <name> on the target.`);
   }
 
-  const match = matches[0];
-  const functionOffset = match[0].indexOf("function");
-  const start = match.index + functionOffset;
-  const bodyStart = source.indexOf("{", start);
-  if (bodyStart === -1) throw new Error(`Could not find function body in ${sourcePath}.`);
-  const end = findMatchingBrace(source, bodyStart);
-  return {
-    functionName: match[1],
-    start,
-    end: end + 1,
-    source: source.slice(start, end + 1).trim()
-  };
+  return candidates[0];
+}
+
+function listJavaScriptFunctionCandidates(source, sourcePath = "source") {
+  const ast = parseJavaScriptModule(source, sourcePath);
+  const candidates = [];
+  walkAst(ast, (node, parent) => {
+    if (node.type === "FunctionDeclaration") {
+      const name = node.id?.name || (parent?.type === "ExportDefaultDeclaration" ? "default" : "");
+      if (!name || name === "default") return;
+      const start = functionKeywordStart(source, node.start);
+      candidates.push({
+        functionName: name,
+        start,
+        end: node.end,
+        replacementStyle: "declaration",
+        source: normalizeJavaScriptFunctionSource(source.slice(start, node.end), sourcePath)
+      });
+      return;
+    }
+
+    if (node.type === "VariableDeclarator" && node.id?.type === "Identifier") {
+      const init = unwrapExpression(node.init);
+      if (!["ArrowFunctionExpression", "FunctionExpression"].includes(init?.type)) return;
+      candidates.push({
+        functionName: node.id.name,
+        start: init.start,
+        end: init.end,
+        replacementStyle: "variable-init",
+        source: normalizeJavaScriptFunctionSource(functionSourceFromExpression(source, node.id.name, init), sourcePath)
+      });
+      return;
+    }
+
+    if (node.type === "AssignmentExpression") {
+      const name = assignmentFunctionName(node.left);
+      const right = unwrapExpression(node.right);
+      if (!name || !["ArrowFunctionExpression", "FunctionExpression"].includes(right?.type)) return;
+      candidates.push({
+        functionName: name,
+        start: right.start,
+        end: right.end,
+        replacementStyle: "variable-init",
+        source: normalizeJavaScriptFunctionSource(functionSourceFromExpression(source, name, right), sourcePath)
+      });
+      return;
+    }
+
+    if (["ObjectMethod", "ClassMethod", "ClassPrivateMethod"].includes(node.type)) {
+      const name = methodFunctionName(node);
+      if (!name || node.kind === "constructor") return;
+      candidates.push({
+        functionName: name,
+        start: node.start,
+        end: node.end,
+        replacementStyle: "method",
+        source: normalizeJavaScriptFunctionSource(functionSourceFromMethod(source, name, node), sourcePath)
+      });
+    }
+  });
+  return dedupeFunctionCandidates(candidates);
+}
+
+function functionKeywordStart(source, start) {
+  const index = source.indexOf("function", start);
+  return index === -1 ? start : index;
+}
+
+function functionSourceFromExpression(source, name, node) {
+  if (node.type === "FunctionExpression") {
+    const body = source.slice(node.body.start, node.body.end);
+    const params = sourceForParams(source, node.params);
+    return `function ${name}(${params}) ${body}`;
+  }
+  const params = sourceForParams(source, node.params);
+  const body = node.body.type === "BlockStatement"
+    ? source.slice(node.body.start, node.body.end)
+    : `{ return ${source.slice(node.body.start, node.body.end)}; }`;
+  return `function ${name}(${params}) ${body}`;
+}
+
+function functionSourceFromMethod(source, name, node) {
+  const params = sourceForParams(source, node.params);
+  const body = source.slice(node.body.start, node.body.end);
+  return `function ${name}(${params}) ${body}`;
+}
+
+function sourceForParams(source, params = []) {
+  return params.map((param) => source.slice(param.start, param.end)).join(", ");
+}
+
+function normalizeJavaScriptFunctionSource(functionSource, sourcePath) {
+  const transformed = transformSync(functionSource, {
+    filename: sourcePath,
+    babelrc: false,
+    configFile: false,
+    parserOpts: { sourceType: "script", plugins: ["typescript", "jsx"] },
+    comments: false,
+    compact: false,
+    plugins: [["@babel/plugin-transform-typescript", { allowDeclareFields: true }]]
+  });
+  return String(transformed?.code || functionSource).trim().replace(/;$/, "");
+}
+
+function unwrapExpression(node) {
+  let current = node;
+  while (["TSAsExpression", "TSTypeAssertion", "TSNonNullExpression", "TypeCastExpression"].includes(current?.type)) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function assignmentFunctionName(node) {
+  if (node?.type === "Identifier") return node.name;
+  if (node?.type === "MemberExpression") return memberPropertyName(node);
+  return "";
+}
+
+function methodFunctionName(node) {
+  if (node.key?.type === "Identifier") return node.key.name;
+  if (node.key?.type === "StringLiteral") return node.key.value;
+  return "";
+}
+
+function dedupeFunctionCandidates(candidates) {
+  const seen = new Set();
+  const result = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.functionName}:${candidate.start}:${candidate.end}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(candidate);
+  }
+  return result.sort((a, b) => a.start - b.start);
 }
 
 function extractPythonFunction(source, functionName, sourcePath) {
@@ -905,10 +1151,17 @@ function extractPythonFunctionSpan(source, functionName, sourcePath) {
 function replaceJavaScriptFunctionSource(sourceText, functionName, nextSource, expectedSource, sourcePath) {
   const span = extractJavaScriptFunctionSpan(sourceText, functionName, sourcePath);
   assertCurrentSourceMatches(span.source, expectedSource, sourcePath);
+  const replacement = replacementForJavaScriptSpan(nextSource, span);
   return {
     functionName: span.functionName,
-    source: `${sourceText.slice(0, span.start)}${String(nextSource).trim()}${sourceText.slice(span.end)}`
+    source: `${sourceText.slice(0, span.start)}${replacement}${sourceText.slice(span.end)}`
   };
+}
+
+function replacementForJavaScriptSpan(nextSource, span) {
+  const normalized = String(nextSource || "").trim();
+  if (span.replacementStyle !== "method") return normalized;
+  return normalized.replace(/^function\s+[A-Za-z_$][\w$]*/, span.functionName);
 }
 
 function replacePythonFunctionSource(sourceText, functionName, nextSource, expectedSource, sourcePath) {

@@ -59,6 +59,8 @@ test("certificate CLI works from an action checkout without installed dependenci
     copyFile("engine.js", join(dir, "engine.js")),
     copyFile("runtime.js", join(dir, "runtime.js")),
     copyFile("python-examples.js", join(dir, "python-examples.js")),
+    copyFile("sandbox/hosted-runner.js", join(dir, "sandbox", "hosted-runner.js")),
+    copyFile("sandbox/runner-child.js", join(dir, "sandbox", "runner-child.js")),
     copyFile("sandbox/python-runner.py", join(dir, "sandbox", "python-runner.py")),
     copyFile("package.json", join(dir, "package.json")),
     copyFile("bin/patchproof.js", join(dir, "bin", "patchproof.js"))

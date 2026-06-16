@@ -363,6 +363,33 @@ export class JsonSaasStore {
     return job;
   }
 
+  async markJobRetrying({ jobId, message, logs = [], nextAttempt = null }) {
+    await this.load();
+    const job = this.state.jobs.find((item) => item.id === jobId);
+    if (!job) throw notFound("Job");
+    job.status = "queued";
+    job.phase = "retrying";
+    job.exitReason = message;
+    job.claimedBy = null;
+    job.runnerId = null;
+    job.completedAt = null;
+    job.logs = [...(job.logs || []), ...logs, `retry scheduled${nextAttempt ? ` for attempt ${nextAttempt}` : ""}`];
+    const run = this.state.runs.find((item) => item.id === job.runId);
+    if (run) {
+      run.status = "queued";
+      run.error = null;
+      run.updatedAt = nowIso();
+    }
+    const attempt = this.state.jobAttempts.find((item) => item.runId === job.runId && !item.completedAt);
+    if (attempt) {
+      attempt.status = "retrying";
+      attempt.completedAt = nowIso();
+      attempt.exitReason = message;
+    }
+    await this.save();
+    return job;
+  }
+
   async completeRun({ runId, certificate, logs = [], status = null, artifacts = [], resourceUsage = {} }) {
     await this.load();
     const run = this.state.runs.find((item) => item.id === runId);

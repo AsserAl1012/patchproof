@@ -6,6 +6,7 @@ const DEFAULT_LIMITS = Object.freeze({
   maxDomainSize: 2400,
   maxCounterexamples: 8,
   maxCandidates: 8,
+  propertyRuns: 96,
   minMutationScore: 0.5,
   minEvidenceScore: 0
 });
@@ -337,7 +338,7 @@ function formatMismatchValue(value) {
 
 function normalizeLimits(raw = {}) {
   const limits = { ...DEFAULT_LIMITS, ...(raw || {}) };
-  for (const key of ["maxSourceChars", "maxTests", "maxDomainSize", "maxCounterexamples", "maxCandidates"]) {
+  for (const key of ["maxSourceChars", "maxTests", "maxDomainSize", "maxCounterexamples", "maxCandidates", "propertyRuns"]) {
     const value = Number(limits[key]);
     if (!Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer.`);
     if (value > DEFAULT_LIMITS[key]) {
@@ -767,40 +768,142 @@ function mutationCheck(source, tests, domain, mayChange, postcondition, maxCount
 }
 
 function generateMutants(source) {
-  const replacements = [
-    [/>=\s*/g, "> "],
-    [/>\s*/g, ">= "],
-    [/<=\s*/g, "< "],
-    [/<\s*/g, "<= "],
-    [/\+\s*1/g, "- 1"],
-    [/-\s*1/g, "+ 1"],
-    [/return\s+max\b/g, "return min"],
-    [/return\s+min\b/g, "return max"],
-    [/\\s\+\/g/g, "\\s/"],
-    [/\.slice\(0,\s*limit\)/g, ".slice(0, limit - 1)"]
-  ];
-
+  const tokens = tokenizeJavaScript(source);
+  const paramNames = functionParameters(source);
   const mutants = [];
   const seen = new Set();
-  for (const [pattern, replacement] of replacements) {
-    const mutated = source.replace(pattern, replacement);
-    if (mutated !== source && !seen.has(mutated)) {
-      seen.add(mutated);
-      mutants.push({
-        label: String(pattern),
-        source: mutated
-      });
+  const push = (label, start, end, replacement) => {
+    const mutated = `${source.slice(0, start)}${replacement}${source.slice(end)}`;
+    if (mutated === source || seen.has(mutated)) return;
+    seen.add(mutated);
+    mutants.push({ label, source: mutated });
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.type !== "operator" && token.type !== "identifier" && token.type !== "number") continue;
+    const replacement = operatorMutations[token.value];
+    if (replacement) {
+      push(`operator ${token.value}->${replacement}`, token.start, token.end, replacement);
+    }
+    if (token.type === "number") {
+      const numeric = Number(token.value);
+      if (Number.isFinite(numeric)) push(`number ${token.value}->${numeric + 1}`, token.start, token.end, String(numeric + 1));
+    }
+    if (token.type === "identifier" && token.value === "return") {
+      const next = tokens[index + 1];
+      if (next?.type === "identifier" && paramNames.length > 1) {
+        const alternate = paramNames.find((name) => name !== next.value);
+        if (alternate) push(`return ${next.value}->${alternate}`, next.start, next.end, alternate);
+      }
     }
   }
   return mutants.slice(0, 8);
 }
 
+const operatorMutations = Object.freeze({
+  ">=": ">",
+  ">": ">=",
+  "<=": "<",
+  "<": "<=",
+  "===": "!==",
+  "!==": "===",
+  "==": "!=",
+  "!=": "==",
+  "+": "-",
+  "-": "+",
+  "*": "/",
+  "/": "*"
+});
+
+function tokenizeJavaScript(source) {
+  const tokens = [];
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      index = source.indexOf("\n", index);
+      if (index === -1) break;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      index = skipJavaScriptString(source, index, char);
+      continue;
+    }
+    const operator = matchOperator(source, index);
+    if (operator) {
+      tokens.push({ type: "operator", value: operator, start: index, end: index + operator.length });
+      index += operator.length;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(char)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && /[\w$]/.test(source[index])) index += 1;
+      tokens.push({ type: "identifier", value: source.slice(start, index), start, end: index });
+      continue;
+    }
+    if (/\d/.test(char)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && /[\d.]/.test(source[index])) index += 1;
+      tokens.push({ type: "number", value: source.slice(start, index), start, end: index });
+      continue;
+    }
+    index += 1;
+  }
+  return tokens;
+}
+
+function skipJavaScriptString(source, start, quote) {
+  let index = start + 1;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === quote) return index + 1;
+    index += 1;
+  }
+  return source.length;
+}
+
+function matchOperator(source, index) {
+  for (const operator of ["===", "!==", ">=", "<=", "==", "!=", ">", "<", "+", "-", "*", "/"]) {
+    if (source.startsWith(operator, index)) return operator;
+  }
+  return "";
+}
+
+function functionParameters(source) {
+  const match = source.match(/function\s+[A-Za-z_$][\w$]*\s*\(([^)]*)\)/);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => /^[A-Za-z_$][\w$]*$/.test(item));
+}
+
 function buildFiniteDomain(tests, limits, precondition) {
   const arity = tests.reduce((max, test) => Math.max(max, test.args.length), 0);
   const valuesByIndex = Array.from({ length: arity }, (_, index) => valuesForIndex(tests, index));
-  return cartesianFiltered(valuesByIndex, limits.maxDomainSize, (args) =>
+  const deterministic = cartesianFiltered(valuesByIndex, limits.maxDomainSize, (args) =>
     precondition(deepClone(args), undefined, null)
   );
+  if (deterministic.length >= limits.maxDomainSize) return deterministic;
+  const generated = generatedPropertyDomain(tests, arity, limits, precondition, deterministic);
+  return [...deterministic, ...generated].slice(0, limits.maxDomainSize);
 }
 
 function valuesForIndex(tests, index) {
@@ -841,6 +944,67 @@ function valuesForIndex(tests, index) {
   }
 
   return values.slice(0, 18);
+}
+
+function generatedPropertyDomain(tests, arity, limits, precondition, existing) {
+  if (!arity || !limits.propertyRuns) return [];
+  const existingKeys = new Set(existing.map(stableStringify));
+  const typesByIndex = Array.from({ length: arity }, (_, index) => {
+    const observed = tests.map((test) => test.args[index]).filter((value) => value !== undefined);
+    const types = new Set(observed.map((value) => Array.isArray(value) ? "array" : typeof value));
+    return types.size ? [...types] : ["number"];
+  });
+  const rng = seededRandom(hashString(stableStringify(tests)));
+  const generated = [];
+  const attempts = Math.max(limits.propertyRuns * 8, 64);
+  for (let attempt = 0; attempt < attempts && generated.length < limits.propertyRuns; attempt += 1) {
+    const args = typesByIndex.map((types, index) => generatedValue(types, rng, tests, index));
+    const key = stableStringify(args);
+    if (existingKeys.has(key)) continue;
+    if (!precondition(deepClone(args), undefined, null)) continue;
+    existingKeys.add(key);
+    generated.push(deepClone(args));
+  }
+  return generated;
+}
+
+function generatedValue(types, rng, tests, index) {
+  const type = types[Math.floor(rng() * types.length)] || "number";
+  if (type === "number") {
+    const observed = tests.map((test) => test.args[index]).filter((value) => typeof value === "number");
+    const anchor = observed.length ? observed[Math.floor(rng() * observed.length)] : 0;
+    const jitter = Math.floor(rng() * 41) - 20;
+    return Math.trunc(anchor + jitter);
+  }
+  if (type === "string") {
+    const pieces = ["", "alpha", "beta", "gamma", " spaced value ", "tabs\tvalue", "UPPER lower"];
+    const left = pieces[Math.floor(rng() * pieces.length)];
+    const right = pieces[Math.floor(rng() * pieces.length)];
+    return rng() < 0.5 ? left : `${left}${right}`;
+  }
+  if (type === "array") {
+    const length = Math.floor(rng() * 6);
+    return Array.from({ length }, () => Math.floor(rng() * 21) - 10);
+  }
+  if (type === "boolean") return rng() >= 0.5;
+  return null;
+}
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (1664525 * state + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < String(value).length; index += 1) {
+    hash ^= String(value).charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function cartesianFiltered(lists, maxResults, include) {
