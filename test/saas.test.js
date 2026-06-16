@@ -5,7 +5,7 @@ import { JsonSaasStore } from "../saas/store.js";
 import { MemoryJobQueue } from "../saas/queue.js";
 import { LocalArtifactStore } from "../saas/artifacts.js";
 import { createInputFromExample, examples } from "../engine.js";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -67,6 +67,48 @@ async function bootstrap(baseUrl) {
   assert.equal(login.response.status, 200);
   return { token: login.json.token, orgId: login.json.orgs[0].id };
 }
+
+test("JSON sessions store token hashes instead of bearer tokens", async () => {
+  const { server, store, baseUrl } = await startSaasServer();
+  try {
+    const { token } = await bootstrap(baseUrl);
+    await store.load();
+    assert.equal(store.state.sessions.length, 1);
+    assert.equal(store.state.sessions[0].token, undefined);
+    assert.equal(store.state.sessions[0].tokenHash.length, 64);
+    assert.notEqual(store.state.sessions[0].tokenHash, token);
+  } finally {
+    server.close();
+  }
+});
+
+test("JSON store migrates legacy raw session tokens on load", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "patchproof-saas-legacy-"));
+  const storePath = join(dir, "store.json");
+  await writeFile(
+    storePath,
+    JSON.stringify({
+      sessions: [
+        {
+          id: "ses_legacy",
+          token: "legacy-token",
+          userId: "usr_legacy",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2099-01-01T00:00:00.000Z"
+        }
+      ],
+      settings: {}
+    }),
+    "utf8"
+  );
+  const store = new JsonSaasStore({ path: storePath });
+  await store.load();
+  assert.equal(store.state.sessions[0].token, undefined);
+  assert.equal(store.state.sessions[0].tokenHash.length, 64);
+  const persisted = JSON.parse(await readFile(storePath, "utf8"));
+  assert.equal(persisted.sessions[0].token, undefined);
+  assert.equal(persisted.sessions[0].tokenHash.length, 64);
+});
 
 test("SaaS flow bootstraps, creates project, creates run, and reads artifacts", async () => {
   const { server, baseUrl } = await startSaasServer();

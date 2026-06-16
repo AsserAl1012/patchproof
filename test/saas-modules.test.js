@@ -20,7 +20,8 @@ import {
   encryptSettingsSecrets,
   maskSettingsSecrets
 } from "../saas/secrets.js";
-import { dockerArgsForPolicy } from "../sandbox/docker-runner.js";
+import { dockerArgsForPolicy, resolveRunnerIsolation } from "../sandbox/docker-runner.js";
+import { processQueuedJob } from "../saas/runner-service.js";
 import { createHmac } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -222,6 +223,47 @@ test("Docker runner arguments enforce production isolation", () => {
   const pythonArgs = dockerArgsForPolicy({ image: "patchproof:test" }, "python");
   assert.ok(pythonArgs.includes("python3"));
   assert.ok(pythonArgs.includes("sandbox/python-runner.py"));
+});
+
+test("runner defaults to Docker isolation and current image tag", () => {
+  const previousIsolation = process.env.PATCHPROOF_RUNNER_ISOLATION;
+  const previousImage = process.env.PATCHPROOF_RUNNER_IMAGE;
+  try {
+    delete process.env.PATCHPROOF_RUNNER_ISOLATION;
+    delete process.env.PATCHPROOF_RUNNER_IMAGE;
+    assert.equal(resolveRunnerIsolation(), "docker");
+    assert.ok(dockerArgsForPolicy().includes("patchproof:0.4.1"));
+  } finally {
+    if (previousIsolation === undefined) delete process.env.PATCHPROOF_RUNNER_ISOLATION;
+    else process.env.PATCHPROOF_RUNNER_ISOLATION = previousIsolation;
+    if (previousImage === undefined) delete process.env.PATCHPROOF_RUNNER_IMAGE;
+    else process.env.PATCHPROOF_RUNNER_IMAGE = previousImage;
+  }
+});
+
+test("queued runner failure handling preserves missing-run failures", async () => {
+  const failedRuns = [];
+  const heartbeats = [];
+  const runningJobs = [];
+  const result = await processQueuedJob({
+    store: {
+      recordRunnerHeartbeat: async (value) => heartbeats.push(value),
+      markJobRunning: async (value) => runningJobs.push(value),
+      getRunDetail: async () => null,
+      failRun: async (value) => failedRuns.push(value)
+    },
+    queue: {},
+    artifactStore: {},
+    payload: { jobId: "job_1", runId: "run_missing" },
+    runnerId: "runner_test",
+    isolation: "process"
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(heartbeats[0].isolation, "process");
+  assert.equal(runningJobs[0].jobId, "job_1");
+  assert.equal(failedRuns[0].runId, "run_missing");
+  assert.match(failedRuns[0].message, /was not found/);
 });
 
 test("GitHub comment builders include run evidence", () => {

@@ -17,6 +17,11 @@ Status reviewed against source and configuration on 2026-06-15.
 - Production encryption keys reject missing, short, and placeholder values.
 - GitHub webhooks fail closed when no signing secret is configured.
 - Non-root Docker runners can be given the mounted socket's supplemental group ID.
+- Queued runner failure handling preserves the original error and marks the payload run failed even when run-detail lookup fails.
+- Queued runners default to Docker isolation; the local inline demo path explicitly opts into process isolation.
+- The default Docker runner image tag, package version, and health endpoint version are aligned at `0.4.1`.
+- Session bearer tokens are stored as server-side hashes in JSON and Postgres stores.
+- The server CSP removes `unsafe-eval` by default; browser eval fallback is opt-in through `PATCHPROOF_ALLOW_BROWSER_EVAL=true`.
 
 ## P0 Before Public Production
 
@@ -42,7 +47,7 @@ Status reviewed against source and configuration on 2026-06-15.
 
 ## P1 Release Engineering
 
-- Align `package.json`, Docker/Helm image tags, certificate verifier version, Git tags, and release notes. The repository currently has a `v0.1.0-beta` tag while package metadata is `0.4.0`.
+- Align Git tags and release notes with the `0.4.1` package, Docker/Helm image tags, and certificate verifier version.
 - Add a release workflow that runs tests, creates provenance/SBOMs, signs container images, publishes npm and OCI artifacts, and attaches checksums.
 - Add dependency update automation, secret scanning, CodeQL/SAST, container scanning, and license checks.
 - Publish immutable container tags and digests; do not deploy mutable local build tags in production.

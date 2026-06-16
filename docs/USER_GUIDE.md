@@ -367,7 +367,7 @@ Verification reproduces the run and compares run id, status, selected patch, evi
 
 ## Security Notes
 
-PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`. Local quick-run mode uses a browser worker or Node permission runner. Production project runs should use the queued Docker runner. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
+PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`, but token filtering is not a sandbox. Local quick-run mode uses a Node permission runner; browser-only worker fallback requires `PATCHPROOF_ALLOW_BROWSER_EVAL=true` and should be used only for local demos. Production project runs should use the queued Docker runner. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
 
 ## Current Limitations
 

@@ -100,13 +100,15 @@ export class PostgresSaasStore {
     const session = {
       id: id("ses"),
       token: randomBytes(32).toString("hex"),
+      tokenHash: "",
       userId: user.id,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString()
     };
+    session.tokenHash = sha256(session.token);
     await this.pool.query("INSERT INTO sessions (id, token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)", [
       session.id,
-      session.token,
+      session.tokenHash,
       session.userId,
       session.createdAt,
       session.expiresAt
@@ -124,7 +126,8 @@ export class PostgresSaasStore {
 
   async logout(token) {
     await this.load();
-    const session = await this.pool.query("DELETE FROM sessions WHERE token = $1 RETURNING user_id", [token || ""]);
+    const tokenHash = sha256(token || "");
+    const session = await this.pool.query("DELETE FROM sessions WHERE token IN ($1, $2) RETURNING user_id", [tokenHash, token || ""]);
     const userId = session.rows[0]?.user_id;
     if (userId) {
       const memberships = await this.membershipsForUser(userId);
@@ -142,20 +145,24 @@ export class PostgresSaasStore {
     await this.load();
     const apiKeyAuth = await this.authenticateApiKey(token);
     if (apiKeyAuth) return apiKeyAuth;
+    const tokenHash = sha256(token || "");
     const result = await this.pool.query(
       `SELECT s.id AS session_id, s.token, s.user_id, s.created_at AS session_created_at, s.expires_at,
               u.id, u.email, u.name, u.created_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
-       WHERE s.token = $1 AND s.expires_at > now()`,
-      [token || ""]
+       WHERE s.token IN ($1, $2) AND s.expires_at > now()`,
+      [tokenHash, token || ""]
     );
     const row = result.rows[0];
     if (!row) throw statusError("Authentication required.", 401);
+    if (row.token === token) {
+      await this.pool.query("UPDATE sessions SET token = $2 WHERE id = $1", [row.session_id, tokenHash]);
+    }
     return {
       session: {
         id: row.session_id,
-        token: row.token,
+        tokenHash,
         userId: row.user_id,
         createdAt: row.session_created_at?.toISOString?.() || row.session_created_at,
         expiresAt: row.expires_at?.toISOString?.() || row.expires_at

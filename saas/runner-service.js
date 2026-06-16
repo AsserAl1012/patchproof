@@ -1,5 +1,5 @@
 import { createInputFromExample, examples } from "../engine.js";
-import { runPatchProofInRunner } from "../sandbox/docker-runner.js";
+import { resolveRunnerIsolation, runPatchProofInRunner } from "../sandbox/docker-runner.js";
 import { buildRunnerPolicy } from "./runner-policy.js";
 import { generateModelCandidates } from "./model-providers.js";
 import { buildCompletionComment, postGitHubComment } from "./github-app.js";
@@ -8,10 +8,12 @@ const DEFAULT_RUNNER_ID = `runner_${process.pid}_${Math.random().toString(16).sl
 
 export async function processQueuedJob({ store, queue, artifactStore, payload, runnerId = DEFAULT_RUNNER_ID, isolation } = {}) {
   if (!payload?.jobId || !payload?.runId) throw new Error("Queue payload is missing jobId/runId.");
+  const effectiveIsolation = resolveRunnerIsolation({ isolation });
+  let detail = null;
   await store.recordRunnerHeartbeat({
     runnerId,
     status: "online",
-    isolation: isolation || process.env.PATCHPROOF_RUNNER_ISOLATION || "process",
+    isolation: effectiveIsolation,
     metadata: { pid: process.pid }
   });
   await store.markJobRunning({ jobId: payload.jobId, runnerId, phase: "claimed" });
@@ -19,7 +21,7 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
   const logs = [`claimed ${payload.jobId}`, `phase baseline`, `phase repairing`, `phase verifying`];
 
   try {
-    const detail = await store.getRunDetail(payload.runId);
+    detail = await store.getRunDetail(payload.runId);
     if (!detail) throw new Error(`Run ${payload.runId} was not found.`);
     const settings = await store.getSettings(detail.run.orgId);
     const runnerPolicy = payload.runnerPolicy || buildRunnerPolicy({
@@ -60,7 +62,7 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
         runnerPolicy
       },
       runnerPolicy,
-      { isolation }
+      { isolation: effectiveIsolation }
     );
     if (!result.ok) throw new Error(result.error?.message || "Runner failed.");
     await store.updateJobPhase({ jobId: payload.jobId, phase: "uploading", logs: ["uploading artifacts"] });
@@ -120,8 +122,9 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
     await maybePostGitHubCompletion({ store, settings, detail, completed, certificate });
     return { ok: true, ...completed };
   } catch (error) {
-    await store.failRun({
-      runId: detail.run.id,
+    const runId = detail?.run?.id || payload.runId;
+    await store.failRun?.({
+      runId,
       message: error.message,
       logs: [...logs, error.message]
     });
@@ -163,7 +166,7 @@ export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DE
     await store.recordRunnerHeartbeat({
       runnerId,
       status: "online",
-      isolation: isolation || process.env.PATCHPROOF_RUNNER_ISOLATION || "process",
+      isolation: resolveRunnerIsolation({ isolation }),
       metadata: { pid: process.pid, processed }
     });
     const payload = await queue.claim({ timeoutSeconds: pollSeconds });

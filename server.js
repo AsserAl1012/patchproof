@@ -34,8 +34,7 @@ const mime = {
 
 const securityHeaders = {
   "Cache-Control": "no-store",
-  "Content-Security-Policy":
-    "default-src 'self'; script-src 'self' 'unsafe-eval'; worker-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": contentSecurityPolicy(),
   "Cross-Origin-Opener-Policy": "same-origin",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
@@ -683,11 +682,27 @@ function scheduleInlineRun({ store, queue, artifactStore, payload }) {
   setImmediate(async () => {
     try {
       const claimed = await queue.claim({ timeoutSeconds: 1 });
-      await processQueuedJob({ store, queue, artifactStore, payload: claimed || payload });
+      await processQueuedJob({ store, queue, artifactStore, payload: claimed || payload, isolation: "process" });
     } catch (error) {
       await store.failRun?.({ runId: payload.runId, message: error.message, logs: [error.message] }).catch?.(() => {});
     }
   });
+}
+
+function contentSecurityPolicy() {
+  const scriptSrc = process.env.PATCHPROOF_ALLOW_BROWSER_EVAL === "true"
+    ? "script-src 'self' 'unsafe-eval'"
+    : "script-src 'self'";
+  return [
+    "default-src 'self'",
+    scriptSrc,
+    "worker-src 'self'",
+    "style-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'"
+  ].join("; ");
 }
 
 async function loadCertificateArtifact({ store, artifactStore, detail }) {

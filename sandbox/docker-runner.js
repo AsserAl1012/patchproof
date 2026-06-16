@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { runPatchProofIsolated } from "./hosted-runner.js";
 
 export async function runPatchProofInRunner(input, policy = {}, options = {}) {
-  const isolation = options.isolation || process.env.PATCHPROOF_RUNNER_ISOLATION || "process";
+  const isolation = resolveRunnerIsolation(options);
   if (isolation === "docker") {
     return runPatchProofInDocker(input, policy, options);
   }
@@ -14,8 +14,12 @@ export async function runPatchProofInRunner(input, policy = {}, options = {}) {
   });
 }
 
+export function resolveRunnerIsolation(options = {}) {
+  return options.isolation || process.env.PATCHPROOF_RUNNER_ISOLATION || "docker";
+}
+
 export function dockerArgsForPolicy(policy = {}, language = "javascript") {
-  const image = policy.image || process.env.PATCHPROOF_RUNNER_IMAGE || "patchproof:0.4.0";
+  const image = policy.image || process.env.PATCHPROOF_RUNNER_IMAGE || "patchproof:0.4.1";
   const base = [
     "run",
     "--rm",

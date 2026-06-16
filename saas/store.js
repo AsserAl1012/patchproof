@@ -44,13 +44,17 @@ export class JsonSaasStore {
 
   async load() {
     if (this.loaded) return;
+    let shouldSaveMigratedState = false;
     try {
       const raw = JSON.parse(await readFile(this.path, "utf8"));
+      shouldSaveMigratedState = Array.isArray(raw.sessions)
+        && raw.sessions.some((session) => session?.token && !session?.tokenHash);
       this.state = mergeState(raw);
     } catch {
       this.state = createEmptyState();
     }
     this.loaded = true;
+    if (shouldSaveMigratedState) await this.save();
   }
 
   async save() {
@@ -114,9 +118,10 @@ export class JsonSaasStore {
       error.statusCode = 401;
       throw error;
     }
+    const token = randomBytes(32).toString("hex");
     const session = {
       id: id("ses"),
-      token: randomBytes(32).toString("hex"),
+      tokenHash: sha256(token),
       userId: user.id,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString()
@@ -131,13 +136,13 @@ export class JsonSaasStore {
       targetId: user.id
     });
     await this.save();
-    return { token: session.token, user: publicUser(user), orgs: this.orgsForUser(user.id) };
+    return { token, user: publicUser(user), orgs: this.orgsForUser(user.id) };
   }
 
   async logout(token) {
     await this.load();
-    const session = this.state.sessions.find((item) => item.token === token);
-    this.state.sessions = this.state.sessions.filter((item) => item.token !== token);
+    const session = this.state.sessions.find((item) => sessionMatchesToken(item, token));
+    this.state.sessions = this.state.sessions.filter((item) => !sessionMatchesToken(item, token));
     if (session) {
       this.addAuditEvent({
         orgId: this.membershipsForUser(session.userId)[0]?.orgId || null,
@@ -154,7 +159,7 @@ export class JsonSaasStore {
     await this.load();
     const apiKey = this.authenticateApiKey(token);
     if (apiKey) return apiKey;
-    const session = this.state.sessions.find((item) => item.token === token);
+    const session = this.state.sessions.find((item) => sessionMatchesToken(item, token));
     if (!session || new Date(session.expiresAt).getTime() < Date.now()) {
       const error = new Error("Authentication required.");
       error.statusCode = 401;
@@ -583,7 +588,9 @@ function createEmptyState() {
 }
 
 function mergeState(raw) {
-  return { ...createEmptyState(), ...(raw || {}), settings: raw?.settings || {} };
+  const state = { ...createEmptyState(), ...(raw || {}), settings: raw?.settings || {} };
+  state.sessions = (state.sessions || []).map(normalizeSession);
+  return state;
 }
 
 function publicUser(user) {
@@ -642,6 +649,23 @@ function nowIso() {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeSession(session) {
+  if (!session || typeof session !== "object") return session;
+  if (session.tokenHash) return session;
+  if (session.token) {
+    const { token, ...rest } = session;
+    return { ...rest, tokenHash: sha256(token) };
+  }
+  return session;
+}
+
+function sessionMatchesToken(session, token) {
+  const value = String(token || "");
+  if (!value) return false;
+  const tokenHash = sha256(value);
+  return session?.tokenHash === tokenHash || session?.token === value;
 }
 
 function notFound(name) {

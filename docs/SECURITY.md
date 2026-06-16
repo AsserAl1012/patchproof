@@ -4,7 +4,7 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 
 ## Current Protections
 
-- Candidate validation runs in a browser worker.
+- Browser-only candidate validation is available only for local/demo fallback mode and requires `PATCHPROOF_ALLOW_BROWSER_EVAL=true`.
 - Worker execution has an eight-second UI timeout.
 - Local/demo API validation runs in a separate Node process.
 - The local/demo runner uses Node permissions with no filesystem write permission and no child-process or worker permission.
@@ -15,16 +15,18 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - `/api/run` enforces JSON-only requests, body-size limits, and per-address token-bucket rate limits.
 - Source and envelope expressions reject obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, `globalThis`, `process`, and dynamic imports.
 - The static server binds to `127.0.0.1` by default.
-- The static server sets security headers including CSP, `nosniff`, no-referrer, and frame denial.
+- The static server sets security headers including CSP without `unsafe-eval` by default, `nosniff`, no-referrer, and frame denial.
 - Static file serving blocks path traversal and hidden dot-path access.
 - Certificates are replayable through the CLI.
-- Private SaaS APIs require bearer-token authentication.
+- Private SaaS APIs require bearer-token authentication. Session bearer tokens and API keys are stored server-side as SHA-256 hashes.
 - Organization-scoped access is enforced for projects, runs, certificates, settings, and audit logs.
 - RBAC roles are enforced for admin/settings/audit/run actions.
 
 ## Trust Boundary
 
 PatchProof should be used inside a customer's private infrastructure. Docker isolation is the v1 production boundary. For hostile multi-tenant cloud use, add stronger sandboxing such as gVisor or Firecracker and complete an external security review.
+
+JavaScript source and predicate token filtering is a preflight policy, not a sandbox. It rejects obvious dangerous constructs, but the security boundary must be process/container isolation. Do not rely on denylist filtering alone for untrusted code.
 
 ## Not Yet Safe For Hosted Public Execution
 
