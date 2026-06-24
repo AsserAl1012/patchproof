@@ -125,6 +125,6 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY
 
 ## Production Private SaaS
 
-The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `patchproof retention` enforces configured retention windows. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
+The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `PATCHPROOF_DOCKER_RUNTIME=runsc` or `kata` can select a hardened Docker runtime on runner hosts that support it. `patchproof retention` enforces configured retention windows. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
 
 For deployment notes, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md), and [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).

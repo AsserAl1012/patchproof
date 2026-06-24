@@ -28,6 +28,7 @@ const nodeFiles = [
   "sandbox/runner-child.js",
   "sandbox/docker-runner.js",
   "scripts/check.js",
+  "scripts/integration-services.js",
   "scripts/smoke.js",
   "scripts/verify-release.js"
 ];

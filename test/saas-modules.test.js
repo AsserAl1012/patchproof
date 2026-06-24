@@ -268,10 +268,15 @@ test("memory queue recovers expired leases and dead-letters exhausted jobs", asy
 });
 
 test("Docker runner arguments enforce production isolation", () => {
-  const args = dockerArgsForPolicy({ image: "patchproof:test", network: "disabled", memoryMb: 512, cpus: 1, pidsLimit: 64 });
+  const args = dockerArgsForPolicy({ image: "patchproof:test", runtime: "runsc", network: "disabled", memoryMb: 512, cpus: 1, pidsLimit: 64 });
+  assert.ok(args.includes("--runtime"));
+  assert.ok(args.includes("runsc"));
   assert.ok(args.includes("--network"));
   assert.ok(args.includes("none"));
   assert.ok(args.includes("--read-only"));
+  assert.ok(args.includes("no-new-privileges:true"));
+  assert.ok(args.includes("--cap-drop"));
+  assert.ok(args.includes("--ipc"));
   assert.ok(args.includes("--pids-limit"));
   assert.ok(args.includes("patchproof:test"));
   const pythonArgs = dockerArgsForPolicy({ image: "patchproof:test" }, "python");

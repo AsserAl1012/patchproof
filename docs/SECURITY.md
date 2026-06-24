@@ -10,6 +10,7 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - Python runs use a separate isolated process, Python isolated mode, an AST policy, restricted builtins, no imports, and the same request/output/time limits. Docker isolation remains the production boundary because Python does not provide Node-style permission flags.
 - Production project runs are queued with leases, acknowledgements, retry limits, expired-lease recovery, and dead-letter tracking.
 - Docker runner mode uses one container per job, no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after completion.
+- Docker runner jobs add `no-new-privileges`, drop Linux capabilities, disable IPC sharing, and can select a host-provided hardened runtime such as gVisor `runsc` or Kata with `PATCHPROOF_DOCKER_RUNTIME`.
 - Certificates, logs, diffs, and runner metadata are stored as hash-checked artifacts.
 - Certificates are always replay-verifiable. Deployments can additionally sign certificates with Ed25519 issuer signatures; verification checks the signature when `PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM` is configured.
 - `/api/run` enforces JSON-only requests, body-size limits, and per-address token-bucket rate limits.

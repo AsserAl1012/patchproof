@@ -20,13 +20,21 @@ export function resolveRunnerIsolation(options = {}) {
 
 export function dockerArgsForPolicy(policy = {}, language = "javascript") {
   const image = policy.image || process.env.PATCHPROOF_RUNNER_IMAGE || "patchproof:0.4.1";
+  const runtime = policy.runtime || process.env.PATCHPROOF_DOCKER_RUNTIME || "";
   const base = [
     "run",
     "--rm",
     "-i",
+    ...(runtime ? ["--runtime", runtime] : []),
     "--network",
     policy.network === "allow-install" ? "bridge" : "none",
     "--read-only",
+    "--security-opt",
+    "no-new-privileges:true",
+    "--cap-drop",
+    "ALL",
+    "--ipc",
+    "none",
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,size=128m",
     "--user",

@@ -33,6 +33,8 @@ spec:
               value: "{{ .Values.runner.isolation }}"
             - name: PATCHPROOF_RUNNER_IMAGE
               value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            - name: PATCHPROOF_DOCKER_RUNTIME
+              value: "{{ .Values.runner.dockerRuntime }}"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

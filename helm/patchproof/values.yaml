@@ -28,6 +28,7 @@ runner:
   enabled: true
   replicas: 1
   isolation: docker
+  dockerRuntime: ""
   dockerSocketPath: /var/run/docker.sock
   dockerSocketGid: 0
 

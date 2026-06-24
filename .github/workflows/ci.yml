@@ -87,3 +87,32 @@ jobs:
           NODE
       - name: Build Docker runner image
         run: docker build -t patchproof:ci .
+      - name: Start MinIO
+        run: |
+          docker run -d --name patchproof-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=patchproof \
+            -e MINIO_ROOT_PASSWORD=patchproof-password \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for i in {1..30}; do
+            if node -e "fetch('http://127.0.0.1:9000/minio/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs patchproof-minio
+          exit 1
+      - name: Run service-backed Docker runner integration
+        env:
+          PATCHPROOF_STORE_DRIVER: postgres
+          DATABASE_URL: postgres://patchproof:patchproof@127.0.0.1:5432/patchproof
+          PATCHPROOF_QUEUE_DRIVER: redis
+          REDIS_URL: redis://127.0.0.1:6379
+          PATCHPROOF_ARTIFACT_DRIVER: s3
+          PATCHPROOF_S3_ENDPOINT: http://127.0.0.1:9000
+          PATCHPROOF_S3_BUCKET: patchproof
+          PATCHPROOF_S3_ACCESS_KEY_ID: patchproof
+          PATCHPROOF_S3_SECRET_ACCESS_KEY: patchproof-password
+          PATCHPROOF_S3_FORCE_PATH_STYLE: "true"
+          PATCHPROOF_RUNNER_IMAGE: patchproof:ci
+        run: npm run integration:services

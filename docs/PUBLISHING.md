@@ -9,6 +9,7 @@ npm run check
 npm run release:check
 npm test
 npm run smoke
+npm run integration:services
 docker compose config
 ```
 
@@ -101,6 +102,7 @@ Avoid claiming:
 - `npm run release:check` confirms version metadata is aligned.
 - Release workflow uploads npm package, SBOM, checksums, and sample certificate artifacts.
 - CI service job passes against Postgres migrations, Redis queue lease/ack behavior, and Docker image build.
+- CI service job runs one queued job through Postgres, Redis, MinIO/S3 artifacts, and the Docker runner.
 - Examples certify.
 - Browser app loads at `http://127.0.0.1:4173`.
 - Certificate replay works from CLI.
@@ -113,6 +115,7 @@ Avoid claiming:
 - GitHub webhook delivery IDs are deduplicated.
 - API keys can create runs but cannot access admin settings.
 - `patchproof retention --dry-run` reports retention work.
+- GHCR image is published and signed with cosign on tag releases.
 - Signed certificate verification is tested when Ed25519 keys are configured.
 
 ## Roadmap After Release

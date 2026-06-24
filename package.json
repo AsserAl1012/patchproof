@@ -70,6 +70,7 @@
     "migrate": "node bin/patchproof.js migrate",
     "test": "node --test",
     "check": "node scripts/check.js",
+    "integration:services": "node scripts/integration-services.js",
     "release:check": "node scripts/verify-release.js",
     "smoke": "node scripts/smoke.js"
   },

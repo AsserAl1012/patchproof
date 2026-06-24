@@ -87,6 +87,15 @@ Run a standalone worker:
 npm run runner -- --isolation docker
 ```
 
+For runner hosts with gVisor or Kata installed, select the hardened Docker runtime used for each job container:
+
+```powershell
+$env:PATCHPROOF_DOCKER_RUNTIME="runsc" # or "kata"
+npm run runner -- --isolation docker
+```
+
+This adds Docker's `--runtime` flag in addition to the default no-network/read-only/non-root/no-new-privileges/cap-drop/PID/memory/CPU limits. The runtime must already be installed and configured on the runner host.
+
 Run retention cleanup:
 
 ```powershell

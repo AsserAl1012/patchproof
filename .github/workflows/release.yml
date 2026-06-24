@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  packages: write
 
 jobs:
   validate-and-publish:
@@ -40,7 +41,25 @@ jobs:
         with:
           certificate: certificate.json
       - name: Build Docker image
-        run: docker build -t patchproof:${{ github.ref_name }} .
+        shell: bash
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build -t "patchproof:${GITHUB_REF_NAME}" -t "${IMAGE_NAME}:${GITHUB_REF_NAME}" .
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_NAME}:${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Publish OCI image
+        if: github.event_name == 'push'
+        run: docker push "${IMAGE_TAG}"
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name == 'push'
+      - name: Sign OCI image
+        if: github.event_name == 'push'
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign "${IMAGE_TAG}"
       - name: Pack npm artifact
         run: npm pack --json > npm-pack.json
       - name: Generate SBOM
