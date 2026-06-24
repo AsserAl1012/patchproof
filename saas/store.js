@@ -573,6 +573,24 @@ export class JsonSaasStore {
     return row;
   }
 
+  async recordGitHubDelivery({ deliveryId, event = "", repository = "", receivedAt = nowIso() }) {
+    await this.load();
+    const idValue = String(deliveryId || "").trim();
+    if (!idValue) return { duplicate: false, recorded: false };
+    const existing = this.state.githubDeliveries.find((delivery) => delivery.deliveryId === idValue);
+    if (existing) return { duplicate: true, recorded: false, delivery: existing };
+    const delivery = {
+      id: id("ghd"),
+      deliveryId: idValue,
+      event: String(event || ""),
+      repository: String(repository || ""),
+      receivedAt
+    };
+    this.state.githubDeliveries.push(delivery);
+    await this.save();
+    return { duplicate: false, recorded: true, delivery };
+  }
+
   async findProjectByGitHubRepository({ installationId, fullName }) {
     await this.load();
     const repo = this.state.githubRepositories.find((item) => item.installationId === String(installationId) && item.fullName === fullName);
@@ -592,6 +610,42 @@ export class JsonSaasStore {
       auditEvents: this.state.auditEvents.length
     };
   }
+
+  async retentionPlan({ now = new Date() } = {}) {
+    await this.load();
+    const artifactCutoffs = retentionCutoffs(this.state.settings, "artifactDays", now);
+    const auditCutoffs = retentionCutoffs(this.state.settings, "auditDays", now);
+    return {
+      expiredSessions: this.state.sessions.filter((session) => new Date(session.expiresAt).getTime() <= now.getTime()),
+      expiredArtifacts: this.state.artifacts.filter((artifact) => isOlderThanOrgCutoff(artifact, artifactCutoffs, DEFAULT_SETTINGS.retention.artifactDays)),
+      expiredAuditEvents: this.state.auditEvents.filter((event) => isOlderThanOrgCutoff(event, auditCutoffs, DEFAULT_SETTINGS.retention.auditDays)),
+      expiredGitHubDeliveries: this.state.githubDeliveries.filter(
+        (delivery) => now.getTime() - new Date(delivery.receivedAt).getTime() > 1000 * 60 * 60 * 24 * 30
+      )
+    };
+  }
+
+  async applyRetentionPlan(plan) {
+    await this.load();
+    const sessionIds = new Set((plan.expiredSessions || []).map((item) => item.id));
+    const artifactIds = new Set((plan.expiredArtifacts || []).map((item) => item.id));
+    const auditIds = new Set((plan.expiredAuditEvents || []).map((item) => item.id));
+    const deliveryIds = new Set((plan.expiredGitHubDeliveries || []).map((item) => item.id));
+    this.state.sessions = this.state.sessions.filter((item) => !sessionIds.has(item.id));
+    this.state.artifacts = this.state.artifacts.filter((item) => !artifactIds.has(item.id));
+    this.state.certificates = this.state.certificates.map((cert) =>
+      artifactIds.has(cert.artifactId) ? { ...cert, artifactId: null } : cert
+    );
+    this.state.auditEvents = this.state.auditEvents.filter((item) => !auditIds.has(item.id));
+    this.state.githubDeliveries = this.state.githubDeliveries.filter((item) => !deliveryIds.has(item.id));
+    await this.save();
+    return {
+      sessions: sessionIds.size,
+      artifacts: artifactIds.size,
+      auditEvents: auditIds.size,
+      githubDeliveries: deliveryIds.size
+    };
+  }
 }
 
 function createEmptyState() {
@@ -609,6 +663,7 @@ function createEmptyState() {
     artifacts: [],
     runnerHeartbeats: [],
     githubRepositories: [],
+    githubDeliveries: [],
     auditEvents: [],
     settings: {}
   };
@@ -676,6 +731,19 @@ function nowIso() {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function retentionCutoffs(settingsByOrg, field, now) {
+  const entries = Object.entries(settingsByOrg || {});
+  return new Map(entries.map(([orgId, settings]) => {
+    const days = Number(settings?.retention?.[field] ?? DEFAULT_SETTINGS.retention[field]);
+    return [orgId, now.getTime() - Math.max(1, days) * 24 * 60 * 60 * 1000];
+  }));
+}
+
+function isOlderThanOrgCutoff(item, cutoffs, defaultDays) {
+  const cutoff = cutoffs.get(item.orgId) ?? Date.now() - Math.max(1, defaultDays) * 24 * 60 * 60 * 1000;
+  return new Date(item.createdAt).getTime() < cutoff;
 }
 
 function normalizeSession(session) {

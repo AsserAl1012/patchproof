@@ -21,6 +21,14 @@ npm pack --dry-run
 npm publish --dry-run --access public
 ```
 
+The release workflow also creates:
+
+- the npm `.tgz` package;
+- `sbom.spdx.json`;
+- `checksums.txt`;
+- a sample replayable certificate;
+- a Docker image build validation.
+
 3. Verify the GitHub Action locally through CI or the release workflow. The workflow generates a certificate and verifies it with the repository action:
 
 ```yaml
@@ -37,7 +45,7 @@ Create an npm automation token for the package owner and store it as the reposit
 NPM_TOKEN
 ```
 
-The release workflow publishes with npm provenance when a version tag is pushed.
+The release workflow publishes with npm provenance when a version tag is pushed. It also uploads release artifacts and attaches them to the GitHub release for tag pushes.
 
 5. Tag a release:
 
@@ -91,6 +99,8 @@ Avoid claiming:
 - `npm pack --dry-run` includes only intended files.
 - `npm publish --dry-run --access public` succeeds.
 - `npm run release:check` confirms version metadata is aligned.
+- Release workflow uploads npm package, SBOM, checksums, and sample certificate artifacts.
+- CI service job passes against Postgres migrations, Redis queue lease/ack behavior, and Docker image build.
 - Examples certify.
 - Browser app loads at `http://127.0.0.1:4173`.
 - Certificate replay works from CLI.
@@ -100,7 +110,10 @@ Avoid claiming:
 - Compose includes Postgres, Redis, MinIO, API, and runner services.
 - `/readyz` reports backing service readiness.
 - GitHub webhook signatures are verified.
+- GitHub webhook delivery IDs are deduplicated.
 - API keys can create runs but cannot access admin settings.
+- `patchproof retention --dry-run` reports retention work.
+- Signed certificate verification is tested when Ed25519 keys are configured.
 
 ## Roadmap After Release
 

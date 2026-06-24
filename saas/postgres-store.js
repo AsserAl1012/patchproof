@@ -626,6 +626,24 @@ export class PostgresSaasStore {
     return row;
   }
 
+  async recordGitHubDelivery({ deliveryId, event = "", repository = "", receivedAt = nowIso() }) {
+    await this.load();
+    const idValue = String(deliveryId || "").trim();
+    if (!idValue) return { duplicate: false, recorded: false };
+    const result = await this.pool.query(
+      `INSERT INTO github_deliveries (id, delivery_id, event, repository, received_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (delivery_id) DO NOTHING
+       RETURNING *`,
+      [id("ghd"), idValue, String(event || ""), String(repository || ""), receivedAt]
+    );
+    if (!result.rows[0]) {
+      const existing = await this.pool.query("SELECT * FROM github_deliveries WHERE delivery_id = $1", [idValue]);
+      return { duplicate: true, recorded: false, delivery: fromGitHubDeliveryRow(existing.rows[0]) };
+    }
+    return { duplicate: false, recorded: true, delivery: fromGitHubDeliveryRow(result.rows[0]) };
+  }
+
   async findProjectByGitHubRepository({ installationId, fullName }) {
     await this.load();
     const result = await this.pool.query(
@@ -661,6 +679,72 @@ export class PostgresSaasStore {
       runnerCount: row.runner_count,
       auditEvents: row.audit_events
     };
+  }
+
+  async retentionPlan({ now = new Date() } = {}) {
+    await this.load();
+    const result = await this.pool.query(
+      `WITH org_retention AS (
+         SELECT org_id,
+                GREATEST(1, COALESCE((settings->'retention'->>'artifactDays')::int, $2)) AS artifact_days,
+                GREATEST(1, COALESCE((settings->'retention'->>'auditDays')::int, $3)) AS audit_days
+         FROM org_settings
+       )
+       SELECT
+         COALESCE((SELECT jsonb_agg(to_jsonb(s)) FROM sessions s WHERE s.expires_at <= $1), '[]'::jsonb) AS expired_sessions,
+         COALESCE((
+           SELECT jsonb_agg(to_jsonb(a))
+           FROM artifacts a
+           LEFT JOIN org_retention r ON r.org_id = a.org_id
+           WHERE a.created_at < $1 - make_interval(days => COALESCE(r.artifact_days, $2))
+         ), '[]'::jsonb) AS expired_artifacts,
+         COALESCE((
+           SELECT jsonb_agg(to_jsonb(e))
+           FROM audit_events e
+           LEFT JOIN org_retention r ON r.org_id = e.org_id
+           WHERE e.created_at < $1 - make_interval(days => COALESCE(r.audit_days, $3))
+         ), '[]'::jsonb) AS expired_audit_events,
+         COALESCE((SELECT jsonb_agg(to_jsonb(d)) FROM github_deliveries d WHERE d.received_at < $1 - interval '30 days'), '[]'::jsonb) AS expired_github_deliveries`,
+      [now, DEFAULT_SETTINGS.retention.artifactDays, DEFAULT_SETTINGS.retention.auditDays]
+    );
+    const row = result.rows[0];
+    return {
+      expiredSessions: row.expired_sessions.map(fromSessionRetentionRow),
+      expiredArtifacts: row.expired_artifacts.map(fromArtifactRow),
+      expiredAuditEvents: row.expired_audit_events.map(fromAuditRow),
+      expiredGitHubDeliveries: row.expired_github_deliveries.map(fromGitHubDeliveryRow)
+    };
+  }
+
+  async applyRetentionPlan(plan) {
+    await this.load();
+    const sessionIds = (plan.expiredSessions || []).map((item) => item.id);
+    const artifactIds = (plan.expiredArtifacts || []).map((item) => item.id);
+    const auditIds = (plan.expiredAuditEvents || []).map((item) => item.id);
+    const deliveryIds = (plan.expiredGitHubDeliveries || []).map((item) => item.id);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (artifactIds.length) {
+        await client.query("UPDATE certificates SET artifact_id = NULL WHERE artifact_id = ANY($1)", [artifactIds]);
+        await client.query("DELETE FROM artifacts WHERE id = ANY($1)", [artifactIds]);
+      }
+      if (sessionIds.length) await client.query("DELETE FROM sessions WHERE id = ANY($1)", [sessionIds]);
+      if (auditIds.length) await client.query("DELETE FROM audit_events WHERE id = ANY($1)", [auditIds]);
+      if (deliveryIds.length) await client.query("DELETE FROM github_deliveries WHERE id = ANY($1)", [deliveryIds]);
+      await client.query("COMMIT");
+      return {
+        sessions: sessionIds.length,
+        artifacts: artifactIds.length,
+        auditEvents: auditIds.length,
+        githubDeliveries: deliveryIds.length
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 
@@ -785,6 +869,26 @@ function fromAuditRow(row) {
     targetId: row.target_id,
     metadata: row.metadata || {},
     createdAt: iso(row.created_at)
+  };
+}
+
+function fromGitHubDeliveryRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    deliveryId: row.delivery_id,
+    event: row.event,
+    repository: row.repository,
+    receivedAt: iso(row.received_at)
+  };
+}
+
+function fromSessionRetentionRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at)
   };
 }
 

@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import {
   GetObjectCommand,
   HeadBucketCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client
 } from "@aws-sdk/client-s3";
@@ -58,6 +59,18 @@ export class LocalArtifactStore {
   async getJson(artifact) {
     const body = await this.getBytes(artifact);
     return JSON.parse(body.toString("utf8"));
+  }
+
+  async delete(artifact) {
+    if (!artifact?.storageKey) return false;
+    const path = safeArtifactPath(this.root, artifact.storageKey);
+    try {
+      await unlink(path);
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
   }
 
   async health() {
@@ -126,6 +139,12 @@ export class S3ArtifactStore {
     return JSON.parse(body.toString("utf8"));
   }
 
+  async delete(artifact) {
+    if (!artifact?.storageKey) return false;
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: artifact.storageKey }));
+    return true;
+  }
+
   async health() {
     await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
     return { ok: true, driver: this.driver, bucket: this.bucket };
@@ -150,4 +169,13 @@ export function verifyHash(bytes, expectedHash) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function safeArtifactPath(root, storageKey) {
+  const path = resolve(root, storageKey);
+  const rel = relative(root, path);
+  if (rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).some((part) => part === "..")) {
+    throw new Error("Artifact storage key escapes the artifact root.");
+  }
+  return path;
 }

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { createInputFromExample, examples, runPatchProof, verifyCertificate } from "../engine.js";
 
 function runExample(example) {
@@ -11,6 +12,11 @@ function runExample(example) {
     mayChangeText: example.mayChange,
     postconditionText: example.postcondition
   });
+}
+
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 test("bundled examples produce certified patches", () => {
@@ -64,6 +70,36 @@ test("verifies replayable certificate", () => {
   const report = verifyCertificate(result.certificate);
   assert.equal(report.valid, true);
   assert.deepEqual(report.mismatches, []);
+});
+
+test("verifies signed certificates and detects signed payload tampering", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const oldPrivateKey = process.env.PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM;
+  const oldPublicKey = process.env.PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM;
+  const oldIssuer = process.env.PATCHPROOF_CERTIFICATE_ISSUER;
+  try {
+    process.env.PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM = privateKey.export({ type: "pkcs8", format: "pem" });
+    process.env.PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM = publicKey.export({ type: "spki", format: "pem" });
+    process.env.PATCHPROOF_CERTIFICATE_ISSUER = "patchproof-test";
+    const result = runExample(examples[1]);
+    assert.equal(result.certificate.proof.algorithm, "Ed25519");
+    assert.equal(result.certificate.proof.issuer, "patchproof-test");
+
+    const report = verifyCertificate(result.certificate);
+    assert.equal(report.valid, true);
+    assert.equal(report.signature.present, true);
+    assert.equal(report.signature.valid, true);
+
+    const tampered = structuredClone(result.certificate);
+    tampered.selectedPatch.source = tampered.selectedPatch.source.replace("replace", "replaceAll");
+    const tamperedReport = verifyCertificate(tampered);
+    assert.equal(tamperedReport.valid, false);
+    assert.match(tamperedReport.mismatches.join(" "), /issuer signature|payload hash|selectedPatch\.source/);
+  } finally {
+    restoreEnv("PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM", oldPrivateKey);
+    restoreEnv("PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM", oldPublicKey);
+    restoreEnv("PATCHPROOF_CERTIFICATE_ISSUER", oldIssuer);
+  }
 });
 
 test("detects tampered certificate replay claims", () => {

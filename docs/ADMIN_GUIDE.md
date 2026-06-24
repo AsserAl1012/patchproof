@@ -28,6 +28,13 @@ Run migrations explicitly with:
 npm run migrate
 ```
 
+Run retention cleanup explicitly with:
+
+```powershell
+npm run retention -- --dry-run
+npm run retention
+```
+
 ## Roles
 
 - `owner`: full control.
@@ -72,6 +79,17 @@ PATCHPROOF_MODEL_NAME=...
 
 Candidate generation runs in the worker before validation. API keys are never sent into the isolated verifier.
 
+Certificate issuer signing is optional. Set these variables on the API and runner when certificates need issuer authenticity in addition to replay reproducibility:
+
+```text
+PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM=<Ed25519 private key PEM>
+PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM=<Ed25519 public key PEM>
+PATCHPROOF_CERTIFICATE_ISSUER=your-org-or-service-name
+PATCHPROOF_CERTIFICATE_KEY_ID=2026-rotation-1
+```
+
+Replay verification still works without signing keys for unsigned certificates. Signed certificates require the matching public key to verify the issuer signature.
+
 Production stores settings in Postgres. JSON storage remains available only for local/demo usage with `PATCHPROOF_STORE_DRIVER=json`.
 
 GitHub settings include:
@@ -92,7 +110,7 @@ Use:
 /metrics
 ```
 
-The dashboard exposes runner health, settings, and audit logs for owners/admins.
+Every response includes `X-Request-ID`. Set `PATCHPROOF_ACCESS_LOGS=json` to emit JSON access logs with request ID, path, status, and duration. The dashboard exposes runner health, settings, and audit logs for owners/admins.
 
 Run workers with:
 
@@ -101,3 +119,5 @@ npm run runner -- --isolation docker
 ```
 
 Docker Compose starts a dedicated `patchproof-runner` service automatically.
+
+Runner shutdown is graceful: `SIGINT` and `SIGTERM` stop the polling loop after the current claimed job finishes. GitHub webhook delivery IDs are stored and deduplicated so retry deliveries do not create duplicate runs.

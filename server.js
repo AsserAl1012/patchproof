@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 import { runPatchProofIsolated } from "./sandbox/hosted-runner.js";
 import { createSaasStore } from "./saas/factory.js";
 import { createJobQueue } from "./saas/queue.js";
@@ -18,6 +19,7 @@ import {
   postGitHubComment
 } from "./saas/github-app.js";
 import { assertProductionSecretConfiguration, maskSettingsSecrets } from "./saas/secrets.js";
+import { runRetention } from "./saas/retention.js";
 
 const root = resolve(process.cwd());
 const requestedPort = Number.parseInt(process.env.PORT || "4173", 10);
@@ -99,6 +101,11 @@ export function createPatchProofServer(options = {}) {
     options.inlineRuns ??
     (queue.driver === "memory" && process.env.PATCHPROOF_RUN_MODE !== "queue");
   const server = createServer(async (req, res) => {
+    const requestId = req.headers["x-request-id"] || randomUUID();
+    req.requestId = requestId;
+    res.setHeader("X-Request-ID", requestId);
+    const startedAt = Date.now();
+    res.on("finish", () => logAccess({ req, res, startedAt }));
     const requestPath = (req.url || "").split("?")[0];
 
     if (requestPath.startsWith("/api/") && requestPath !== "/api/run") {
@@ -289,6 +296,15 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     const repoContext = githubRepoFromWebhook(body);
     const repoFullName = repoContext.fullName;
     const installationId = repoContext.installationId;
+    const delivery = await store.recordGitHubDelivery?.({
+      deliveryId: req.headers["x-github-delivery"] || "",
+      event: req.headers["x-github-event"] || "",
+      repository: repoFullName
+    });
+    if (delivery?.duplicate) {
+      writeJson(res, 202, { ok: true, duplicate: true, accepted: false });
+      return;
+    }
     const project = command && repoFullName && installationId
       ? await store.findProjectByGitHubRepository?.({ installationId, fullName: repoFullName })
       : null;
@@ -579,6 +595,22 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     return;
   }
 
+  if (requestPath === "/api/admin/retention" && method === "POST") {
+    requirePermission(role, "admin:write");
+    const result = await runRetention({ store, artifactStore, dryRun: body.dryRun === true });
+    await store.addAuditEvent?.({
+      orgId: primaryOrgId,
+      actorUserId: actorUserId(auth),
+      action: body.dryRun === true ? "retention.planned" : "retention.applied",
+      targetType: "org",
+      targetId: primaryOrgId,
+      metadata: result
+    });
+    await store.save?.();
+    writeJson(res, 200, { ok: true, retention: result });
+    return;
+  }
+
   if (requestPath === "/api/admin/api-keys" && method === "GET") {
     requirePermission(role, "admin:read");
     writeJson(res, 200, { ok: true, apiKeys: await store.listApiKeys(primaryOrgId) });
@@ -620,6 +652,20 @@ function writeJson(res, statusCode, value, headers = {}) {
     ...headers
   });
   res.end(body);
+}
+
+function logAccess({ req, res, startedAt }) {
+  if (process.env.PATCHPROOF_ACCESS_LOGS !== "json") return;
+  const record = {
+    timestamp: new Date().toISOString(),
+    requestId: req.requestId,
+    method: req.method,
+    path: (req.url || "").split("?")[0],
+    status: res.statusCode,
+    durationMs: Date.now() - startedAt,
+    remoteAddress: req.socket.remoteAddress || ""
+  };
+  console.log(JSON.stringify(record));
 }
 
 function authResponse(auth, body = {}) {

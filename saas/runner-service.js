@@ -171,10 +171,10 @@ async function maybePostGitHubCompletion({ store, settings, detail, completed, c
   );
 }
 
-export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DEFAULT_RUNNER_ID, isolation, once = false, pollSeconds = 5 } = {}) {
+export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DEFAULT_RUNNER_ID, isolation, once = false, pollSeconds = 5, signal } = {}) {
   await queue.connect?.();
   let processed = 0;
-  while (true) {
+  while (!signal?.aborted) {
     await store.recordRunnerHeartbeat({
       runnerId,
       status: "online",
@@ -183,13 +183,20 @@ export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DE
     });
     const payload = await queue.claim({ timeoutSeconds: pollSeconds });
     if (!payload) {
-      if (once) return { processed };
+      if (once || signal?.aborted) break;
       continue;
     }
     await processQueuedJob({ store, queue, artifactStore, payload, runnerId, isolation });
     processed += 1;
-    if (once) return { processed };
+    if (once || signal?.aborted) break;
   }
+  await store.recordRunnerHeartbeat({
+    runnerId,
+    status: "stopping",
+    isolation: resolveRunnerIsolation({ isolation }),
+    metadata: { pid: process.pid, processed }
+  }).catch?.(() => {});
+  return { processed, stopped: true };
 }
 
 function resolveRunInput(detail) {

@@ -60,6 +60,7 @@ node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
 node bin/patchproof.js runner --isolation docker
+node bin/patchproof.js retention --dry-run
 ```
 
 ## Main Screen
@@ -152,6 +153,15 @@ The expressions can reference:
 
 Production mode stores SaaS state in Postgres, queues jobs in Redis, and stores certificates/logs/diffs in S3-compatible object storage.
 
+Run retention cleanup when you want to enforce configured data-retention windows:
+
+```powershell
+node bin/patchproof.js retention --dry-run
+node bin/patchproof.js retention
+```
+
+Owners/admins can also call `POST /api/admin/retention` with `{ "dryRun": true }`.
+
 ## Reading Results
 
 ### Candidate Patches
@@ -178,6 +188,7 @@ The certificate contains:
 - `validation`: tests, preservation checks, postcondition checks, bounded proof, mutation score;
 - `behavioralEnvelope`: exact proof scope;
 - `residualRisk`: limitations for this run.
+- `proof`: optional Ed25519 issuer signature metadata when certificate signing is configured.
 
 ### Validation Console
 
@@ -363,11 +374,20 @@ Certificates include `replay.input`, the exact source/tests/envelope snapshot re
 node bin/patchproof.js verify certificate.json
 ```
 
-Verification reproduces the run and compares run id, status, selected patch, evidence score, and finite-domain size.
+Verification reproduces the run and compares run id, status, selected patch, evidence score, and finite-domain size. If the certificate includes `proof.signature` and `PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM` is configured, verification also checks the issuer signature and payload hash.
+
+To sign newly produced certificates, configure the API and runner with:
+
+```text
+PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM=<Ed25519 private key PEM>
+PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM=<Ed25519 public key PEM>
+PATCHPROOF_CERTIFICATE_ISSUER=<issuer name>
+PATCHPROOF_CERTIFICATE_KEY_ID=<key id>
+```
 
 ## Security Notes
 
-PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`, but token filtering is not a sandbox. Local quick-run mode and CLI runs use isolated runner processes; browser-side verification is disabled. Production project runs should use the queued Docker runner. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
+PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, and `globalThis`, but token filtering is not a sandbox. Local quick-run mode and CLI runs use isolated runner processes; browser-side verification is disabled. Production project runs should use the queued Docker runner. Responses include `X-Request-ID`; set `PATCHPROOF_ACCESS_LOGS=json` for structured access logs. Do not expose PatchProof as an open hosted arbitrary-code execution service without stronger sandboxing and security review.
 
 ## Current Limitations
 

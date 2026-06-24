@@ -29,3 +29,61 @@ jobs:
         with:
           certificate: certificate.json
       - run: npm pack --dry-run
+
+  integration-services:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: patchproof
+          POSTGRES_PASSWORD: patchproof
+          POSTGRES_DB: patchproof
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patchproof"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Run Postgres migrations
+        env:
+          PATCHPROOF_STORE_DRIVER: postgres
+          DATABASE_URL: postgres://patchproof:patchproof@127.0.0.1:5432/patchproof
+        run: npm run migrate
+      - name: Validate Redis queue backend
+        env:
+          PATCHPROOF_QUEUE_DRIVER: redis
+          PATCHPROOF_REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          node --input-type=module <<'NODE'
+          import { createJobQueue } from "./saas/queue.js";
+          const queue = createJobQueue();
+          await queue.connect();
+          await queue.enqueue({ jobId: "job_ci", runId: "run_ci" });
+          const claimed = await queue.claim({ timeoutSeconds: 1 });
+          if (!claimed?.leaseId) throw new Error("Redis queue did not return a leased payload.");
+          await queue.ack(claimed);
+          await queue.close?.();
+          NODE
+      - name: Build Docker runner image
+        run: docker build -t patchproof:ci .

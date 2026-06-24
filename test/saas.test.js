@@ -295,11 +295,21 @@ test("SaaS admin endpoints expose settings, runners, readiness, and metrics", as
 
     const ready = await fetch(`${baseUrl}/readyz`);
     assert.equal(ready.status, 200);
+    assert.ok(ready.headers.get("x-request-id"));
 
     const metrics = await fetch(`${baseUrl}/metrics`);
     const text = await metrics.text();
     assert.equal(metrics.status, 200);
     assert.match(text, /patchproof_runs_total/);
+
+    const retention = await request(baseUrl, "/api/admin/retention", {
+      method: "POST",
+      token,
+      orgId,
+      body: { dryRun: true }
+    });
+    assert.equal(retention.response.status, 200);
+    assert.equal(retention.json.retention.dryRun, true);
   } finally {
     server.close();
   }

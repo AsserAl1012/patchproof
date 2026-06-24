@@ -23,6 +23,8 @@ try {
     listen(port, { host });
   } else if (command === "runner") {
     await runnerCommand(args.slice(1));
+  } else if (command === "retention") {
+    await retentionCommand(args.slice(1));
   } else if (command === "migrate") {
     await migrateCommand();
   } else if (command === "scenarios") {
@@ -237,8 +239,34 @@ async function runnerCommand(runnerArgs) {
   const store = createSaasStore();
   const queue = createJobQueue();
   const artifactStore = createArtifactStore();
-  const result = await runRunnerLoop({ store, queue, artifactStore, runnerId, isolation, once });
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  const result = await runRunnerLoop({ store, queue, artifactStore, runnerId, isolation, once, signal: controller.signal });
   if (once) console.log(`runner processed ${result.processed} job(s)`);
+  await store.close?.();
+}
+
+async function retentionCommand(retentionArgs) {
+  const [{ createSaasStore }, { createArtifactStore }, { runRetention }] = await Promise.all([
+    import("../saas/factory.js"),
+    import("../saas/artifacts.js"),
+    import("../saas/retention.js")
+  ]);
+  const dryRun = retentionArgs.includes("--dry-run");
+  const jsonMode = retentionArgs.includes("--json");
+  const store = createSaasStore();
+  const artifactStore = createArtifactStore();
+  const result = await runRetention({ store, artifactStore, dryRun });
+  await store.close?.();
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    `retention ${dryRun ? "planned" : "applied"}: sessions=${result.planned.sessions}, artifacts=${result.planned.artifacts}, auditEvents=${result.planned.auditEvents}, githubDeliveries=${result.planned.githubDeliveries}`
+  );
 }
 
 async function migrateCommand() {
@@ -360,6 +388,7 @@ function printHelp() {
 Usage:
   patchproof serve [--port 4173] [--host 127.0.0.1]
   patchproof runner [--once] [--id runner_1] [--isolation docker|process]
+  patchproof retention [--dry-run] [--json]
   patchproof migrate
   patchproof scenarios
   patchproof init [--repo .] [--config patchproof.yml] [--force] [--json]

@@ -5,6 +5,8 @@ import {
   createInputFromExample as createJavaScriptInputFromExample,
   examples as javaScriptExamples,
   runPatchProof as runJavaScriptPatchProof,
+  signCertificate,
+  verifyCertificateSignature,
   verifyCertificate as verifyJavaScriptCertificate
 } from "./engine.js";
 import { pythonExamples } from "./python-examples.js";
@@ -29,9 +31,18 @@ export function runPatchProof(input) {
 }
 
 export function verifyCertificate(certificate) {
-  return certificate?.target?.language === "python" || certificate?.replay?.input?.language === "python"
-    ? runPythonOperation("verify", certificate)
-    : verifyJavaScriptCertificate(certificate);
+  if (certificate?.target?.language === "python" || certificate?.replay?.input?.language === "python") {
+    const replayReport = runPythonOperation("verify", certificate);
+    const signatureReport = verifyCertificateSignature(certificate);
+    const mismatches = [...(replayReport.mismatches || []), ...(signatureReport.mismatches || [])];
+    return {
+      ...replayReport,
+      valid: replayReport.valid && signatureReport.valid,
+      signature: signatureReport,
+      mismatches
+    };
+  }
+  return verifyJavaScriptCertificate(certificate);
 }
 
 export function languageOf(input) {
@@ -70,5 +81,11 @@ function runPythonOperation(operation, value) {
     throw new Error(`Python verifier returned invalid JSON: ${String(child.stderr || child.stdout || "").trim()}`);
   }
   if (!payload.ok) throw new Error(payload.error?.message || "Python verifier failed.");
+  if (operation === "run" && payload.result?.certificate) {
+    return {
+      ...payload.result,
+      certificate: signCertificate(payload.result.certificate)
+    };
+  }
   return payload.result;
 }

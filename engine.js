@@ -1,5 +1,8 @@
+import { createHash, createPrivateKey, createPublicKey, sign, timingSafeEqual, verify } from "node:crypto";
+
 export const CERTIFICATE_SCHEMA = "patchproof.certificate.v2";
 export const PATCHPROOF_VERSION = "0.4.1";
+export const CERTIFICATE_SIGNATURE_ALGORITHM = "Ed25519";
 const DEFAULT_LIMITS = Object.freeze({
   maxSourceChars: 12000,
   maxTests: 100,
@@ -245,6 +248,9 @@ export function verifyCertificate(certificate) {
     };
   }
 
+  const signatureReport = verifyCertificateSignature(certificate);
+  mismatches.push(...signatureReport.mismatches);
+
   let reproduced;
   try {
     reproduced = runPatchProof(replayInput);
@@ -257,12 +263,67 @@ export function verifyCertificate(certificate) {
     };
   }
 
-  compareCertificate(mismatches, certificate, reproduced.certificate);
+  compareCertificate(mismatches, stripCertificateProof(certificate), stripCertificateProof(reproduced.certificate));
 
   return {
     valid: mismatches.length === 0,
     mismatches,
+    signature: signatureReport,
     reproduced: reproduced.certificate
+  };
+}
+
+export function signCertificate(certificate, options = {}) {
+  const privateKeyPem = normalizePem(options.privateKeyPem ?? process.env.PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM);
+  if (!privateKeyPem) return certificate;
+  const signed = structuredClone(certificate);
+  signed.proof = {
+    ...(signed.proof || {}),
+    type: "issuer-signature",
+    algorithm: CERTIFICATE_SIGNATURE_ALGORITHM,
+    issuer: String(options.issuer ?? process.env.PATCHPROOF_CERTIFICATE_ISSUER ?? "patchproof"),
+    keyId: String(options.keyId ?? process.env.PATCHPROOF_CERTIFICATE_KEY_ID ?? "default"),
+    signedAt: new Date().toISOString()
+  };
+  signed.proof.payloadHash = certificatePayloadHash(signed);
+  signed.proof.signature = signCertificatePayload(signed, privateKeyPem);
+  return signed;
+}
+
+export function verifyCertificateSignature(certificate, options = {}) {
+  if (!certificate?.proof?.signature) {
+    return { present: false, valid: true, mismatches: [] };
+  }
+  const publicKeyPem = normalizePem(
+    options.publicKeyPem ??
+      process.env.PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM ??
+      publicKeyFromPrivatePem(process.env.PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM)
+  );
+  if (!publicKeyPem) {
+    return {
+      present: true,
+      valid: false,
+      mismatches: ["Certificate is signed, but no PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM is configured."]
+    };
+  }
+  const mismatches = [];
+  if (certificate.proof.algorithm !== CERTIFICATE_SIGNATURE_ALGORITHM) {
+    mismatches.push(`Unsupported certificate signature algorithm: ${certificate.proof.algorithm || "missing"}.`);
+  }
+  const expectedHash = certificatePayloadHash(certificate);
+  if (!safeEqualHex(expectedHash, certificate.proof.payloadHash)) {
+    mismatches.push("Certificate payload hash does not match signed payload.");
+  }
+  if (!verifyCertificatePayload(certificate, publicKeyPem)) {
+    mismatches.push("Certificate issuer signature is invalid.");
+  }
+  return {
+    present: true,
+    valid: mismatches.length === 0,
+    issuer: certificate.proof.issuer,
+    keyId: certificate.proof.keyId,
+    algorithm: certificate.proof.algorithm,
+    mismatches
   };
 }
 
@@ -1136,7 +1197,7 @@ function buildCertificate({
     residualRisk.push(`${selected.mutation.survivors.length} simple patch mutants survived validation.`);
   }
 
-  return {
+  return signCertificate({
     schema: CERTIFICATE_SCHEMA,
     verifierVersion: PATCHPROOF_VERSION,
     runId: simpleHash(
@@ -1246,7 +1307,70 @@ function buildCertificate({
         limits: input.limits
       }
     }
-  };
+  });
+}
+
+function stripCertificateProof(certificate) {
+  if (!certificate || typeof certificate !== "object") return certificate;
+  const clone = structuredClone(certificate);
+  delete clone.proof;
+  return clone;
+}
+
+function canonicalCertificateForSignature(certificate, { includePayloadHash = true } = {}) {
+  const clone = structuredClone(certificate);
+  if (clone.proof) {
+    delete clone.proof.signature;
+    if (!includePayloadHash) delete clone.proof.payloadHash;
+  }
+  return stableStringify(clone);
+}
+
+function certificatePayloadHash(certificate) {
+  return createHash("sha256")
+    .update(canonicalCertificateForSignature(certificate, { includePayloadHash: false }))
+    .digest("hex");
+}
+
+function signCertificatePayload(certificate, privateKeyPem) {
+  const key = createPrivateKey(privateKeyPem);
+  return sign(null, Buffer.from(canonicalCertificateForSignature(certificate), "utf8"), key).toString("base64");
+}
+
+function verifyCertificatePayload(certificate, publicKeyPem) {
+  try {
+    const key = createPublicKey(publicKeyPem);
+    return verify(
+      null,
+      Buffer.from(canonicalCertificateForSignature(certificate), "utf8"),
+      key,
+      Buffer.from(String(certificate.proof.signature || ""), "base64")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function publicKeyFromPrivatePem(privateKeyPem) {
+  const normalized = normalizePem(privateKeyPem);
+  if (!normalized) return "";
+  try {
+    return createPublicKey(createPrivateKey(normalized)).export({ type: "spki", format: "pem" });
+  } catch {
+    return "";
+  }
+}
+
+function normalizePem(value) {
+  const text = String(value || "").trim();
+  return text ? text.replace(/\\n/g, "\n") : "";
+}
+
+function safeEqualHex(left, right) {
+  if (!left || !right) return false;
+  const a = Buffer.from(String(left), "hex");
+  const b = Buffer.from(String(right), "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function simpleHash(text) {

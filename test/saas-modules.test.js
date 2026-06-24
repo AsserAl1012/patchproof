@@ -13,6 +13,8 @@ import { buildRunnerPolicy } from "../saas/runner-policy.js";
 import { parsePatchProofCommand, verifyGitHubSignature } from "../saas/github.js";
 import { LocalArtifactStore } from "../saas/artifacts.js";
 import { MemoryJobQueue } from "../saas/queue.js";
+import { JsonSaasStore } from "../saas/store.js";
+import { runRetention } from "../saas/retention.js";
 import { buildCompletionComment, buildQueuedComment } from "../saas/github-app.js";
 import {
   assertProductionSecretConfiguration,
@@ -203,6 +205,39 @@ test("local artifact store validates hashes", async () => {
   const artifact = await store.putJson({ orgId: "org_1", runId: "run_1", kind: "certificate", value: { ok: true } });
   assert.equal((await store.getJson(artifact)).ok, true);
   await assert.rejects(() => store.getJson({ ...artifact, sha256: "0".repeat(64) }), /hash verification/);
+  assert.equal(await store.delete(artifact), true);
+});
+
+test("retention removes expired sessions, artifacts, audit events, and GitHub deliveries", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "patchproof-retention-"));
+  const store = new JsonSaasStore({ path: join(dir, "store.json") });
+  const artifactStore = new LocalArtifactStore({ root: join(dir, "artifacts") });
+  await store.load();
+  const oldDate = "2020-01-01T00:00:00.000Z";
+  store.state.settings.org_1 = { retention: { artifactDays: 1, auditDays: 1 } };
+  store.state.sessions.push({ id: "ses_old", tokenHash: "x", userId: "usr_1", createdAt: oldDate, expiresAt: oldDate });
+  const artifact = await artifactStore.putJson({ orgId: "org_1", runId: "run_1", kind: "logs", value: { ok: true } });
+  store.state.artifacts.push({ id: "art_old", orgId: "org_1", projectId: "prj_1", runId: "run_1", kind: "logs", createdAt: oldDate, ...artifact });
+  store.state.certificates.push({ id: "cert_1", runId: "run_1", orgId: "org_1", projectId: "prj_1", certificate: {}, hash: "h", artifactId: "art_old", createdAt: oldDate });
+  store.state.auditEvents.push({ id: "aud_old", orgId: "org_1", actorUserId: null, action: "old", targetType: "org", targetId: "org_1", metadata: {}, createdAt: oldDate });
+  store.state.githubDeliveries.push({ id: "ghd_old", deliveryId: "delivery-1", event: "issue_comment", repository: "a/b", receivedAt: oldDate });
+  await store.save();
+
+  const result = await runRetention({ store, artifactStore, now: new Date("2026-01-01T00:00:00.000Z") });
+  assert.deepEqual(result.applied, { sessions: 1, artifacts: 1, auditEvents: 1, githubDeliveries: 1 });
+  assert.equal(store.state.sessions.length, 0);
+  assert.equal(store.state.artifacts.length, 0);
+  assert.equal(store.state.certificates[0].artifactId, null);
+  await assert.rejects(() => artifactStore.getJson(artifact), /ENOENT/);
+});
+
+test("JSON store deduplicates GitHub delivery ids", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "patchproof-deliveries-"));
+  const store = new JsonSaasStore({ path: join(dir, "store.json") });
+  const first = await store.recordGitHubDelivery({ deliveryId: "delivery-1", event: "issue_comment", repository: "owner/repo" });
+  const second = await store.recordGitHubDelivery({ deliveryId: "delivery-1", event: "issue_comment", repository: "owner/repo" });
+  assert.equal(first.recorded, true);
+  assert.equal(second.duplicate, true);
 });
 
 test("memory queue enqueues and claims jobs", async () => {

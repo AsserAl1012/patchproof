@@ -2,7 +2,7 @@
 
 PatchProof is a private AI bug-fixing and patch-verification system. It proposes candidate JavaScript and Python function patches, executes tests in isolated runners, checks bounded behavioral preservation, runs postcondition checks, performs token-aware mutation analysis, and emits replayable validation certificates.
 
-The current build supports both local quick-run mode and self-hosted private SaaS mode with login, organizations, projects, Postgres-backed runs, Redis queued jobs, Docker-capable runner workers, S3/MinIO artifact storage, audit logs, admin settings, GitHub App slash-command callbacks, and replayable certificates.
+The current build supports both local quick-run mode and self-hosted private SaaS mode with login, organizations, projects, Postgres-backed runs, Redis queued jobs, Docker-capable runner workers, S3/MinIO artifact storage, retention cleanup, audit logs, admin settings, GitHub App slash-command callbacks, optional Ed25519 certificate signatures, and replayable certificates.
 
 ## Quick Start
 
@@ -31,6 +31,7 @@ npm run smoke
 npm start
 npm run migrate
 npm run runner
+npm run retention -- --dry-run
 ```
 
 ## CLI
@@ -49,6 +50,7 @@ node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
 node bin/patchproof.js runner --isolation docker
+node bin/patchproof.js retention --dry-run
 ```
 
 After publishing to npm, the same commands become:
@@ -113,6 +115,8 @@ Every accepted patch includes a JSON certificate with the exact claim and residu
 - Proof mode: finite-domain bounded equivalence with boundary cases, seeded generated property-style cases, and token-aware mutation checks; not whole-program formal verification
 - Production storage: Postgres for SaaS state, Redis for queueing, S3/MinIO for artifacts
 - Isolation: production runner supports Docker one-container-per-job isolation; CLI and local quick-run use isolated runner processes; browser-side verification is disabled
+- Certificate trust: replay verification is always available; deployments can also sign certificates with Ed25519 using `PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM` and verify with `PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM`
+- Operations: GitHub webhook delivery IDs are deduplicated, runner shutdown is graceful between jobs, request IDs are emitted on responses, and retention cleanup can remove expired sessions, artifacts, audit events, and webhook delivery records
 - Repair model: language-specific local repair templates, plus explicitly configured OpenAI-compatible, Azure OpenAI, or local chat-completions candidate generation in CLI/SaaS runs with prompt-size controls and usage estimates
 
 Python runs require Python 3.11+ and execute through the CLI or PatchProof server. Set `PATCHPROOF_PYTHON_BIN` when Python is not available as `python` on Windows or `python3` on Unix.
@@ -121,6 +125,6 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY
 
 ## Production Private SaaS
 
-The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
+The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `patchproof retention` enforces configured retention windows. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
 
 For deployment notes, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md), and [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).

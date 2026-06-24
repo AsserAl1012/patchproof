@@ -13,7 +13,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -39,7 +39,35 @@ jobs:
       - uses: ./
         with:
           certificate: certificate.json
-      - run: npm pack --dry-run
+      - name: Build Docker image
+        run: docker build -t patchproof:${{ github.ref_name }} .
+      - name: Pack npm artifact
+        run: npm pack --json > npm-pack.json
+      - name: Generate SBOM
+        run: npm sbom --sbom-format spdx --json > sbom.spdx.json
+      - name: Generate checksums
+        shell: bash
+        run: |
+          PACKAGE_FILE="$(node -e "console.log(require('./npm-pack.json')[0].filename)")"
+          sha256sum "$PACKAGE_FILE" sbom.spdx.json certificate.json > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patchproof-release-${{ github.ref_name }}
+          path: |
+            *.tgz
+            npm-pack.json
+            sbom.spdx.json
+            checksums.txt
+            certificate.json
+      - name: Attach release artifacts
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tgz
+            sbom.spdx.json
+            checksums.txt
+            certificate.json
       - name: Publish npm package
         if: github.event_name == 'push' || github.event.inputs.publish == 'true'
         env:

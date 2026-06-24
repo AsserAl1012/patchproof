@@ -1,6 +1,6 @@
 # Launch Readiness
 
-Status reviewed against source and configuration on 2026-06-16.
+Status reviewed against source and configuration on 2026-06-24.
 
 ## Implemented In This Pass
 
@@ -25,32 +25,38 @@ Status reviewed against source and configuration on 2026-06-16.
 - Browser-worker verification has been removed; UI runs go through the server/CLI isolated runners.
 - The server CSP removes `unsafe-eval` and sets `worker-src 'none'`.
 - Redis and memory queues use leased jobs, acknowledgements, expired-lease recovery, retry limits, and dead-letter tracking.
+- Optional Ed25519 certificate issuer signatures are supported for JavaScript and Python certificates.
+- GitHub webhook delivery IDs are persisted and deduplicated before run creation.
+- Runner loops handle graceful `SIGINT`/`SIGTERM` shutdown between jobs.
+- Retention cleanup removes expired sessions, artifacts, audit events, and old webhook delivery records.
+- HTTP responses include request IDs and optional JSON access logs can be enabled with `PATCHPROOF_ACCESS_LOGS=json`.
+- CI now includes a service-backed integration job for Postgres migrations, Redis queue lease/ack behavior, and Docker image build validation.
+- Release workflow now builds the Docker image, creates npm package artifacts, generates SBOM/checksums, uploads release artifacts, and publishes npm with provenance when configured.
 
 ## P0 Before Public Production
 
 - Do not expose anonymous `POST /api/run` as a hostile multi-tenant service. Complete an independent sandbox review and move public execution to gVisor, Kata, or microVM isolation.
-- Run end-to-end CI against Postgres, Redis, S3/MinIO, and the Docker runner. Current tests primarily use in-memory/local substitutes.
+- Extend integration CI from Postgres/Redis/Docker-build validation to full end-to-end runner execution against Postgres, Redis, S3/MinIO, and Docker.
 - Treat Docker socket access as root-equivalent. Use dedicated runner hosts and never co-locate untrusted workloads or control-plane secrets.
 - Move Kubernetes secrets out of Helm values into Kubernetes Secrets or an external secret manager.
-- Add certificate signing if certificates must prove issuer authenticity outside the originating PatchProof deployment. Replay currently proves reproducibility and detects changed claims, not issuer identity.
+- Configure and rotate Ed25519 certificate signing keys if certificates must prove issuer authenticity outside the originating PatchProof deployment.
 - Complete an external security review covering dynamic JavaScript execution, authentication, webhook handling, GitHub App permissions, artifact access, and tenant isolation.
 
 ## P1 Product Reliability
 
-- Add idempotency and delivery-ID deduplication for GitHub webhooks.
-- Add graceful worker shutdown, job cancellation, retry visibility, and stale-run reconciliation.
+- Add job cancellation, retry visibility, and stale-run reconciliation.
 - Add user invitations, password reset, session revocation, and optional OIDC/SAML/MFA.
-- Add retention workers that enforce configured artifact and audit retention periods.
+- Schedule retention workers in deployment environments and test deletion against production object storage.
 - Test backup and restore procedures with real Postgres and object storage data.
-- Add structured logs, request IDs, traces, model latency/error metrics, and alerting rules.
+- Add traces, model latency/error metrics, and alerting rules.
 - Validate provider-specific token fields and support the OpenAI Responses API where required.
 - Expand repository adapters from simple literal assertion extraction into full framework execution/coverage adapters before claiming whole-repository repair.
 - Change GitHub patch application from committing a `.patch` artifact to applying reviewed file changes once the repository repair workflow is wired into GitHub App runs.
 
 ## P1 Release Engineering
 
-- Align Git tags and release notes with the `0.4.1` package, Docker/Helm image tags, and certificate verifier version.
-- Add a release workflow that runs tests, creates provenance/SBOMs, signs container images, publishes npm and OCI artifacts, and attaches checksums.
+- Align git tags/release notes with the `0.4.1` package, Docker/Helm image tags, and certificate verifier version.
+- Add container image signing and OCI publishing to the release workflow.
 - Add dependency update automation, secret scanning, CodeQL/SAST, container scanning, and license checks.
 - Publish immutable container tags and digests; do not deploy mutable local build tags in production.
 - Verify npm ownership and enable npm trusted publishing with GitHub OIDC. The `patchproof` package name was unclaimed when checked on 2026-06-15.
@@ -65,4 +71,4 @@ Status reviewed against source and configuration on 2026-06-16.
 
 ## Current Publish Position
 
-The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and function-level JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation, integration testing, secret management, certificate trust, and security-review items are complete.
+The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and function-level JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation, full service-backed integration testing, secret management, certificate-key operations, and security-review items are complete.

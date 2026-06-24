@@ -466,7 +466,7 @@ def verify_certificate(certificate):
 
 
 def compare_values(expected, actual, path, mismatches):
-    if len(mismatches) >= 25 or path == "certificate.generatedAt" or expected == actual: return
+    if len(mismatches) >= 25 or path in ("certificate.generatedAt", "certificate.proof") or expected == actual: return
     if isinstance(expected, dict) and isinstance(actual, dict):
         for key in sorted(set(expected) | set(actual)): compare_values(expected.get(key), actual.get(key), f"{path}.{key}", mismatches)
     elif isinstance(expected, list) and isinstance(actual, list):

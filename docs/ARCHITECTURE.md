@@ -41,7 +41,11 @@ engine.js
 
 server.js
   static server, auth/org/project/run APIs, queue producer, quick-run API, rate limits,
-  security headers, health/readiness/metrics endpoints
+  security headers, request IDs, health/readiness/metrics endpoints
+
+saas/retention.js
+  retention planner/executor for expired sessions, artifacts, audit events, and
+  GitHub delivery dedupe records
 
 test/
   automated regression tests
@@ -66,6 +70,7 @@ test/
    - compute evidence score and rejection reasons.
 9. Select the highest-scoring accepted patch, or the highest-scoring rejected candidate if none certify.
 10. Emit replayable certificate.
+11. Optionally attach an Ed25519 issuer signature when certificate signing keys are configured.
 
 ## Private SaaS Runtime
 
@@ -75,6 +80,8 @@ test/
 4. Production runner mode uses Docker with no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after each job.
 5. Certificates, logs, diffs, and runner metadata are uploaded to S3/MinIO or local artifact storage.
 6. Certificate download verifies artifact hashes before returning data.
+7. `patchproof retention` deletes expired artifact objects/metadata, sessions, audit events, and old GitHub delivery records.
+8. Runner loops handle `SIGINT`/`SIGTERM` by stopping after the current job and recording a stopping heartbeat.
 
 ## Why The Design Is Conservative
 
@@ -104,5 +111,7 @@ Certificates include:
 - selected patch metadata;
 - validation counters;
 - residual risk.
+- optional `proof` metadata with Ed25519 issuer signature, issuer, key ID, signed time, and payload hash.
 
 `patchproof verify certificate.json` reruns the engine against `replay.input` and compares the reproduced claims with the stored certificate.
+If the certificate includes a signature and the public key is configured, verification also checks payload hash and signature validity. Unsigned historical certificates continue to verify by replay.

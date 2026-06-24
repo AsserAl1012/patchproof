@@ -21,6 +21,8 @@ This is suitable for self-hosted/private SaaS deployments when paired with the q
 
 Private SaaS mode adds authenticated organizations, projects, persistent runs, queued jobs, audit events, admin settings, GitHub integration, artifact storage, and runner health APIs. Production mode uses Postgres, Redis, and S3/MinIO. JSON storage remains available only for local/demo usage.
 
+Operational hardening now includes request IDs, optional JSON access logs, webhook delivery deduplication, graceful runner shutdown, and explicit retention cleanup for expired sessions, artifacts, audit events, and webhook delivery records.
+
 ## Local Container Run
 
 ```powershell
@@ -83,6 +85,24 @@ Run a standalone worker:
 
 ```powershell
 npm run runner -- --isolation docker
+```
+
+Run retention cleanup:
+
+```powershell
+npm run retention -- --dry-run
+npm run retention
+```
+
+Set `PATCHPROOF_ACCESS_LOGS=json` when your log collector expects structured access records. Responses include `X-Request-ID`; preserve or inject that header at the reverse proxy so API logs and proxy logs can be correlated.
+
+For issuer-signed certificates, configure Ed25519 PEM keys in the API and runner environment:
+
+```text
+PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM=...
+PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM=...
+PATCHPROOF_CERTIFICATE_ISSUER=...
+PATCHPROOF_CERTIFICATE_KEY_ID=...
 ```
 
 ## Bind Host
