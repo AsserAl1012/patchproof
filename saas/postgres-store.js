@@ -74,6 +74,7 @@ export class PostgresSaasStore {
         now
       ]);
       await client.query("INSERT INTO org_settings (org_id, settings) VALUES ($1, $2)", [org.id, JSON.stringify(encryptSettingsSecrets(DEFAULT_SETTINGS))]);
+      const { token } = await insertSession(client, user.id);
       await insertAuditEvent(client, {
         orgId: org.id,
         actorUserId: user.id,
@@ -83,7 +84,7 @@ export class PostgresSaasStore {
         metadata: { email: user.email }
       });
       await client.query("COMMIT");
-      return { user: publicUser(user), org, role: "owner" };
+      return { token, user: publicUser(user), org, role: "owner", orgs: [{ ...org, role: "owner" }] };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -272,6 +273,205 @@ export class PostgresSaasStore {
     if (!result.rows[0]) throw statusError("API key not found.", 404);
     await this.addAuditEvent({ orgId, actorUserId, action: "api_key.revoked", targetType: "api_key", targetId: apiKeyId });
     return fromApiKeyRow(result.rows[0]);
+  }
+
+  async createInvitation({ orgId, actorUserId, email, role = "developer", name = "", expiresInDays = 7 }) {
+    await this.load();
+    const normalizedRole = normalizeRole(role);
+    if (!["admin", "developer", "reviewer", "auditor"].includes(normalizedRole)) {
+      throw statusError("Invitations can only use admin, developer, reviewer, or auditor roles.", 400);
+    }
+    const token = `ppi_${randomBytes(32).toString("hex")}`;
+    const row = {
+      id: id("inv"),
+      orgId,
+      email: normalizeEmail(email),
+      name: String(name || ""),
+      role: normalizedRole,
+      tokenHash: sha256(token),
+      createdByUserId: actorUserId,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + Math.max(1, Number(expiresInDays || 7)) * 24 * 60 * 60 * 1000).toISOString()
+    };
+    const result = await this.pool.query(
+      `INSERT INTO invitations (id, org_id, email, name, role, token_hash, created_by_user_id, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [row.id, row.orgId, row.email, row.name, row.role, row.tokenHash, row.createdByUserId, row.createdAt, row.expiresAt]
+    );
+    await this.addAuditEvent({ orgId, actorUserId, action: "invitation.created", targetType: "invitation", targetId: row.id, metadata: { email: row.email, role: row.role } });
+    return { invitation: fromInvitationRow(result.rows[0]), token };
+  }
+
+  async listInvitations(orgId) {
+    await this.load();
+    const result = await this.pool.query("SELECT * FROM invitations WHERE org_id = $1 ORDER BY created_at DESC", [orgId]);
+    return result.rows.map(fromInvitationRow);
+  }
+
+  async revokeInvitation({ orgId, actorUserId, invitationId }) {
+    await this.load();
+    const result = await this.pool.query(
+      "UPDATE invitations SET revoked_at = COALESCE(revoked_at, now()) WHERE id = $1 AND org_id = $2 RETURNING *",
+      [invitationId, orgId]
+    );
+    if (!result.rows[0]) throw statusError("Invitation not found.", 404);
+    await this.addAuditEvent({ orgId, actorUserId, action: "invitation.revoked", targetType: "invitation", targetId: invitationId });
+    return fromInvitationRow(result.rows[0]);
+  }
+
+  async acceptInvitation({ token, password, name = "" }) {
+    await this.load();
+    const tokenHash = sha256(String(token || ""));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const invitationResult = await client.query(
+        `SELECT * FROM invitations
+         WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+         FOR UPDATE`,
+        [tokenHash]
+      );
+      const invitation = invitationResult.rows[0];
+      if (!invitation) throw statusError("Invitation token is invalid or expired.", 400);
+      let userResult = await client.query("SELECT * FROM users WHERE email = $1", [invitation.email]);
+      let user = userResult.rows[0];
+      const now = nowIso();
+      if (!user) {
+        const created = {
+          id: id("usr"),
+          email: invitation.email,
+          name: String(name || invitation.name || invitation.email.split("@")[0]),
+          passwordHash: hashPassword(password),
+          createdAt: now
+        };
+        userResult = await client.query(
+          "INSERT INTO users (id, email, name, password_hash, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+          [created.id, created.email, created.name, created.passwordHash, created.createdAt]
+        );
+        user = userResult.rows[0];
+      }
+      await client.query(
+        `INSERT INTO memberships (user_id, org_id, role, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role`,
+        [user.id, invitation.org_id, invitation.role, now]
+      );
+      const updatedInvitation = await client.query(
+        "UPDATE invitations SET accepted_at = $2, accepted_by_user_id = $3 WHERE id = $1 RETURNING *",
+        [invitation.id, now, user.id]
+      );
+      const { token: sessionToken } = await insertSession(client, user.id);
+      await insertAuditEvent(client, { orgId: invitation.org_id, actorUserId: user.id, action: "invitation.accepted", targetType: "invitation", targetId: invitation.id });
+      await client.query("COMMIT");
+      return {
+        token: sessionToken,
+        user: publicUser(fromUserRow(user)),
+        orgs: await this.orgsForUser(user.id),
+        invitation: fromInvitationRow(updatedInvitation.rows[0])
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createPasswordReset({ orgId, actorUserId, email, userId, expiresInMinutes = 60 }) {
+    await this.load();
+    const userResult = userId
+      ? await this.pool.query("SELECT * FROM users WHERE id = $1", [userId])
+      : await this.pool.query("SELECT * FROM users WHERE email = $1", [normalizeEmail(email)]);
+    const user = userResult.rows[0];
+    if (!user) throw statusError("User not found.", 404);
+    const membership = await this.pool.query("SELECT 1 FROM memberships WHERE user_id = $1 AND org_id = $2", [user.id, orgId]);
+    if (!membership.rows[0]) throw statusError("User not found.", 404);
+    const token = `ppr_${randomBytes(32).toString("hex")}`;
+    const row = {
+      id: id("rst"),
+      orgId,
+      userId: user.id,
+      tokenHash: sha256(token),
+      createdByUserId: actorUserId,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + Math.max(5, Number(expiresInMinutes || 60)) * 60 * 1000).toISOString()
+    };
+    const result = await this.pool.query(
+      `INSERT INTO password_resets (id, org_id, user_id, token_hash, created_by_user_id, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [row.id, row.orgId, row.userId, row.tokenHash, row.createdByUserId, row.createdAt, row.expiresAt]
+    );
+    await this.addAuditEvent({ orgId, actorUserId, action: "password_reset.created", targetType: "user", targetId: user.id });
+    return { passwordReset: fromPasswordResetRow(result.rows[0]), token };
+  }
+
+  async resetPassword({ token, password }) {
+    await this.load();
+    const tokenHash = sha256(String(token || ""));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const resetResult = await client.query(
+        `SELECT * FROM password_resets
+         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+         FOR UPDATE`,
+        [tokenHash]
+      );
+      const reset = resetResult.rows[0];
+      if (!reset) throw statusError("Password reset token is invalid or expired.", 400);
+      const userResult = await client.query("UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING *", [
+        reset.user_id,
+        hashPassword(password)
+      ]);
+      if (!userResult.rows[0]) throw statusError("User not found.", 404);
+      await client.query("UPDATE password_resets SET used_at = now() WHERE id = $1", [reset.id]);
+      await client.query("DELETE FROM sessions WHERE user_id = $1", [reset.user_id]);
+      await insertAuditEvent(client, { orgId: reset.org_id, actorUserId: reset.user_id, action: "password_reset.completed", targetType: "user", targetId: reset.user_id });
+      await client.query("COMMIT");
+      return { user: publicUser(fromUserRow(userResult.rows[0])) };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listSessions({ orgId, userId = null }) {
+    await this.load();
+    const result = await this.pool.query(
+      `SELECT s.*, u.email, u.name, u.created_at AS user_created_at
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       JOIN memberships m ON m.user_id = s.user_id
+       WHERE m.org_id = $1 AND ($2::text IS NULL OR s.user_id = $2)
+       ORDER BY s.created_at DESC`,
+      [orgId, userId]
+    );
+    return result.rows.map(fromSessionRow);
+  }
+
+  async revokeSession({ orgId, actorUserId, sessionId }) {
+    await this.load();
+    const result = await this.pool.query(
+      `DELETE FROM sessions s
+       USING memberships m
+       WHERE s.id = $1 AND s.user_id = m.user_id AND m.org_id = $2
+       RETURNING s.*`,
+      [sessionId, orgId]
+    );
+    if (!result.rows[0]) throw statusError("Session not found.", 404);
+    const session = result.rows[0];
+    await this.addAuditEvent({ orgId, actorUserId, action: "session.revoked", targetType: "session", targetId: session.id, metadata: { userId: session.user_id } });
+    return {
+      id: session.id,
+      userId: session.user_id,
+      user: null,
+      createdAt: iso(session.created_at),
+      expiresAt: iso(session.expires_at)
+    };
   }
 
   async listProjects(orgId) {
@@ -756,7 +956,16 @@ export class PostgresSaasStore {
         (SELECT COUNT(*)::int FROM runs WHERE status = 'rejected') AS runs_rejected,
         (SELECT COUNT(*)::int FROM runs WHERE status = 'failed') AS runs_failed,
         (SELECT COUNT(*)::int FROM runs WHERE status = 'cancelled') AS runs_cancelled,
+        COALESCE((SELECT ROUND(EXTRACT(EPOCH FROM AVG(updated_at - created_at)) * 1000)::bigint FROM runs WHERE status IN ('certified', 'rejected', 'failed', 'completed', 'cancelled')), 0)::bigint AS run_duration_ms_avg,
         (SELECT COUNT(*)::int FROM jobs WHERE status = 'queued') AS queue_depth,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'queued') AS jobs_queued,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'running') AS jobs_running,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'completed') AS jobs_completed,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'failed') AS jobs_failed,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'cancelled') AS jobs_cancelled,
+        COALESCE((SELECT ROUND(EXTRACT(EPOCH FROM AVG(completed_at - COALESCE(started_at, created_at))) * 1000)::bigint FROM jobs WHERE completed_at IS NOT NULL), 0)::bigint AS job_duration_ms_avg,
+        (SELECT COUNT(*)::int FROM jobs WHERE resource_usage ? 'modelProvider' AND resource_usage->>'modelProvider' <> 'disabled') AS model_calls_total,
+        (SELECT COUNT(*)::int FROM jobs WHERE status = 'failed' AND resource_usage ? 'modelProvider' AND resource_usage->>'modelProvider' <> 'disabled') AS model_errors_total,
         (SELECT COUNT(*)::int FROM runner_heartbeats WHERE last_seen_at > now() - interval '2 minutes') AS runner_count,
         (SELECT COUNT(*)::int FROM audit_events) AS audit_events
     `);
@@ -767,7 +976,16 @@ export class PostgresSaasStore {
       runsRejected: row.runs_rejected,
       runsFailed: row.runs_failed,
       runsCancelled: row.runs_cancelled,
+      runDurationMsAvg: Number(row.run_duration_ms_avg || 0),
       queueDepth: row.queue_depth,
+      jobsQueued: row.jobs_queued,
+      jobsRunning: row.jobs_running,
+      jobsCompleted: row.jobs_completed,
+      jobsFailed: row.jobs_failed,
+      jobsCancelled: row.jobs_cancelled,
+      jobDurationMsAvg: Number(row.job_duration_ms_avg || 0),
+      modelCallsTotal: row.model_calls_total,
+      modelErrorsTotal: row.model_errors_total,
       runnerCount: row.runner_count,
       auditEvents: row.audit_events
     };
@@ -867,6 +1085,26 @@ async function insertArtifact(client, { orgId, projectId, runId, kind, artifact 
     [row.id, orgId, projectId, runId, kind, row.storageDriver, row.storageKey, row.sha256, row.bytes, row.contentType, row.createdAt]
   );
   return row;
+}
+
+async function insertSession(client, userId) {
+  const token = randomBytes(32).toString("hex");
+  const session = {
+    id: id("ses"),
+    token,
+    tokenHash: sha256(token),
+    userId,
+    createdAt: nowIso(),
+    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString()
+  };
+  await client.query("INSERT INTO sessions (id, token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)", [
+    session.id,
+    session.tokenHash,
+    session.userId,
+    session.createdAt,
+    session.expiresAt
+  ]);
+  return { token, session };
 }
 
 function fromUserRow(row) {
@@ -972,6 +1210,51 @@ function fromGitHubDeliveryRow(row) {
     event: row.event,
     repository: row.repository,
     receivedAt: iso(row.received_at)
+  };
+}
+
+function fromInvitationRow(row) {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    email: row.email,
+    name: row.name || "",
+    role: row.role,
+    createdByUserId: row.created_by_user_id,
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at),
+    acceptedAt: iso(row.accepted_at),
+    acceptedByUserId: row.accepted_by_user_id,
+    revokedAt: iso(row.revoked_at)
+  };
+}
+
+function fromPasswordResetRow(row) {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    userId: row.user_id,
+    createdByUserId: row.created_by_user_id,
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at),
+    usedAt: iso(row.used_at)
+  };
+}
+
+function fromSessionRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    user: row.email
+      ? {
+          id: row.user_id,
+          email: row.email,
+          name: row.name,
+          createdAt: iso(row.user_created_at)
+        }
+      : null,
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at)
   };
 }
 

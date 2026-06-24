@@ -63,6 +63,18 @@ test("rejects dangerous source tokens", () => {
       }),
     /Unsafe source/
   );
+  assert.throws(
+    () =>
+      runPatchProof({
+        source: `function clamp(value, min, max) { return (() => {}).constructor("return value")(); }`,
+        testsText: JSON.stringify(example.tests),
+        bugReport: example.bugReport,
+        preconditionText: example.precondition,
+        mayChangeText: example.mayChange,
+        postconditionText: example.postcondition
+      }),
+    /Unsafe source/
+  );
 });
 
 test("verifies replayable certificate", () => {

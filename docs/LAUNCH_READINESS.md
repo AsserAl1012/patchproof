@@ -40,10 +40,16 @@ Status reviewed against source and configuration on 2026-06-24.
 - Queued/running runs can be cancelled through the dashboard and `POST /api/v1/runs/:id/cancel`.
 - `patchproof reconcile` and `POST /api/v1/admin/reconcile` plan/apply stale-running-job cleanup after runner crashes.
 - The HTTP API is versioned under `/api/v1` and publishes OpenAPI metadata at `/api/v1/openapi.json`.
+- Anonymous `POST /api/run` is disabled by default when `NODE_ENV=production`; explicit opt-in requires `PATCHPROOF_ENABLE_QUICK_RUN=true`.
+- Owner/admin APIs support user invitations, one-time password reset tokens, organization session listing, and session revocation. Users can list/revoke their own browser sessions.
+- Prometheus metrics now include job status counts, average run/job duration, and model-call/error counters.
+- Repository workflows can run the configured project test command with `patchproof test` or after apply with `run --apply --verify-command`.
+- GitHub apply-patch can create PRs with reviewed file contents and falls back to `.patch` artifacts only when file contents are not supplied.
+- Release verification checks the Docker runner policy image tag in addition to package, server, compose, Helm, and publishing metadata.
 
 ## P0 Before Public Hosted Production
 
-- Do not expose anonymous `POST /api/run` as a hostile multi-tenant service. Complete an independent sandbox review and move public execution to gVisor, Kata, or microVM isolation.
+- Do not expose anonymous quick-run execution as a hostile multi-tenant service. Keep production quick-run disabled unless it is protected by private network controls, and complete an independent sandbox review before public exposure.
 - Run the service-backed integration job on every protected branch and release tag; monitor flakes before public launch.
 - Treat Docker socket access as root-equivalent. Use dedicated runner hosts and never co-locate untrusted workloads or control-plane secrets.
 - Move Kubernetes secrets out of Helm values into Kubernetes Secrets or an external secret manager.
@@ -52,13 +58,12 @@ Status reviewed against source and configuration on 2026-06-24.
 
 ## P1 Product Reliability
 
-- Add user invitations, password reset, session revocation, and optional OIDC/SAML/MFA.
+- Add optional OIDC/SAML/MFA for organizations that do not want local password accounts.
 - Schedule retention workers in deployment environments and test deletion against production object storage.
 - Test backup and restore procedures with real Postgres and object storage data.
-- Add traces, model latency/error metrics, and alerting rules.
+- Add distributed traces and alerting rules.
 - Validate provider-specific token fields and support the OpenAI Responses API where required.
-- Expand repository adapters from simple literal assertion extraction into full framework execution/coverage adapters before claiming whole-repository repair.
-- Change GitHub patch application from committing a `.patch` artifact to applying reviewed file changes once the repository repair workflow is wired into GitHub App runs.
+- Expand repository adapters from post-apply project test-command execution into full framework coverage adapters before claiming whole-repository repair.
 
 ## P1 Release Engineering
 

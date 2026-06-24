@@ -30,8 +30,19 @@ const FORBIDDEN_CODE_PATTERNS = [
   /\bdocument\b/,
   /\bwindow\b/,
   /\bglobalThis\b/,
+  /\bglobal\b/,
   /\bprocess\b/,
   /\brequire\b/,
+  /\bconstructor\b/,
+  /\bprototype\b/,
+  /__proto__/,
+  /\bReflect\b/,
+  /\bProxy\b/,
+  /\bBuffer\b/,
+  /\bDeno\b/,
+  /\bBun\b/,
+  /\bsetTimeout\b/,
+  /\bsetInterval\b/,
   /\bimport\s*\(/
 ];
 

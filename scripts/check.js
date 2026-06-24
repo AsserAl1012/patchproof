@@ -15,6 +15,7 @@ const nodeFiles = [
   "saas/migrations.js",
   "saas/artifacts.js",
   "saas/queue.js",
+  "saas/run-input.js",
   "saas/retention.js",
   "saas/runner-service.js",
   "saas/secrets.js",

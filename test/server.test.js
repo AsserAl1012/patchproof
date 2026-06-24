@@ -133,6 +133,32 @@ test("hosted API can be disabled", async () => {
   }
 });
 
+test("quick run is disabled by default in production", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousQuickRun = process.env.PATCHPROOF_ENABLE_QUICK_RUN;
+  const previousSecret = process.env.PATCHPROOF_SECRET_KEY;
+  process.env.NODE_ENV = "production";
+  process.env.PATCHPROOF_SECRET_KEY = "test-production-secret-key-with-enough-length";
+  delete process.env.PATCHPROOF_ENABLE_QUICK_RUN;
+  const { server, baseUrl } = await startTestServer();
+  try {
+    const response = await fetch(`${baseUrl}/api/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(createInputFromExample(examples[0]))
+    });
+    assert.equal(response.status, 404);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousQuickRun === undefined) delete process.env.PATCHPROOF_ENABLE_QUICK_RUN;
+    else process.env.PATCHPROOF_ENABLE_QUICK_RUN = previousQuickRun;
+    if (previousSecret === undefined) delete process.env.PATCHPROOF_SECRET_KEY;
+    else process.env.PATCHPROOF_SECRET_KEY = previousSecret;
+    server.close();
+  }
+});
+
 test("hosted API rejects unsafe source in isolated runner", async () => {
   const input = createInputFromExample(examples[0]);
   input.source = `function clamp(value, min, max) { fetch("/x"); return value; }`;

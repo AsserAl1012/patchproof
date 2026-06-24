@@ -5,7 +5,7 @@ ENV HOST=0.0.0.0
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends docker.io ca-certificates python3-minimal \
+  && apt-get install -y --no-install-recommends docker.io ca-certificates python3 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./

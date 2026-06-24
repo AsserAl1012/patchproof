@@ -16,18 +16,20 @@ worker.js
 bin/patchproof.js
   CLI for serving the app, initializing/checking repositories, running scenarios,
   applying certified target patches, migrating Postgres, running workers, and
-  replaying certificates. Production operations commands generate secrets,
+  replaying certificates. It can also run the configured project test command
+  directly or after applying a certified patch. Production operations commands generate secrets,
   validate deployed dependencies, run retention, and reconcile stale jobs.
 
 repository-adapter.js
   Inspects repository checkouts, detects package/test metadata, reads patchproof.yml
   targets, uses AST parsing for JavaScript/TypeScript function extraction and
   simple framework assertions, reads JSON PatchProof tests, applies certified
-  function replacements, and builds verifier inputs
+  function replacements, runs configured project test commands, and builds verifier inputs
 
 saas/
   Postgres/JSON store adapters, migrations, Redis/memory queues, artifact storage,
-  RBAC, config parser, model provider metadata, runner service, GitHub App utilities
+  RBAC, account invitations/password reset/session revocation, config parser,
+  model provider metadata, runner service, GitHub App utilities
 
 sandbox/hosted-runner.js
   process-isolated API runner with timeout, memory cap, and Node permissions
@@ -42,7 +44,7 @@ engine.js
 
 server.js
   static server, auth/org/project/run APIs, versioned /api/v1 aliases, OpenAPI
-  document, queue producer, quick-run API, rate limits, security headers,
+  document, queue producer, production-gated quick-run API, rate limits, security headers,
   request IDs, health/readiness/metrics endpoints
 
 saas/retention.js
@@ -76,7 +78,7 @@ test/
 
 ## Private SaaS Runtime
 
-1. The API stores organizations, users, projects, runs, jobs, settings, audit events, and artifact metadata in Postgres.
+1. The API stores organizations, users, invitations, password reset tokens, sessions, projects, runs, jobs, settings, audit events, and artifact metadata in Postgres.
 2. `POST /api/projects/:id/runs` creates a run/job and enqueues the job in Redis.
 3. `patchproof runner` claims leased jobs, records runner heartbeats, updates job phases, executes the verifier, ACKs completed jobs, retries retryable failures, and dead-letters exhausted jobs.
 4. Production runner mode uses Docker with no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after each job.
@@ -86,6 +88,7 @@ test/
 8. `patchproof retention` deletes expired artifact objects/metadata, sessions, audit events, and old GitHub delivery records.
 9. `patchproof reconcile` marks stale running jobs failed after unclean runner shutdowns.
 10. Runner loops handle `SIGINT`/`SIGTERM` by stopping after the current job and recording a stopping heartbeat.
+11. Metrics expose run totals, job status counts, queue depth, runner count, average run/job duration, audit event count, and model-call/error counters.
 
 ## Why The Design Is Conservative
 

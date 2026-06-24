@@ -17,10 +17,12 @@ import {
   buildQueuedComment,
   createPatchPullRequest,
   githubRepoFromWebhook,
+  isRepositoryAllowed,
   postGitHubComment
 } from "./saas/github-app.js";
 import { assertProductionSecretConfiguration, maskSettingsSecrets } from "./saas/secrets.js";
 import { runRetention } from "./saas/retention.js";
+import { resolveQueuedRunInput } from "./saas/run-input.js";
 
 const root = resolve(process.cwd());
 const requestedPort = Number.parseInt(process.env.PORT || "4173", 10);
@@ -93,6 +95,10 @@ export function createPatchProofServer(options = {}) {
   assertProductionSecretConfiguration();
   const webRoot = resolve(options.root || root);
   const enableApi = options.enableApi !== false;
+  const enableQuickRun = options.enableQuickRun ?? (
+    process.env.PATCHPROOF_ENABLE_QUICK_RUN === "true" ||
+    process.env.NODE_ENV !== "production"
+  );
   const rateLimit = createRateLimiter(options.rateLimit);
   const authRateLimit = createRateLimiter({ capacity: 10, refillPerMinute: 5 });
   const store = createSaasStore(options);
@@ -116,7 +122,12 @@ export function createPatchProofServer(options = {}) {
     }
 
     if (apiPath.startsWith("/api/") && apiPath !== "/api/run") {
-      if (["/api/bootstrap", "/api/auth/login"].includes(apiPath) && req.method === "POST") {
+      if ([
+        "/api/bootstrap",
+        "/api/auth/login",
+        "/api/invitations/accept",
+        "/api/auth/password-reset/complete"
+      ].includes(apiPath) && req.method === "POST") {
         const rate = authRateLimit(`${req.socket.remoteAddress || "unknown"}:${apiPath}`);
         if (!rate.allowed) {
           res.writeHead(429, { ...apiHeaders, "Retry-After": String(rate.retryAfterSeconds) });
@@ -136,7 +147,7 @@ export function createPatchProofServer(options = {}) {
     }
 
     if (apiPath === "/api/run") {
-      if (!enableApi) {
+      if (!enableApi || !enableQuickRun) {
         writeJson(res, 404, { ok: false, error: { message: "API is disabled." } });
         return;
       }
@@ -284,6 +295,21 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     return;
   }
 
+  if (requestPath === "/api/invitations/accept" && method === "POST") {
+    const accepted = await store.acceptInvitation(body);
+    writeJson(res, 200, { ok: true, ...authResponse(accepted, body) }, {
+      "Set-Cookie": sessionCookie(accepted.token, req)
+    });
+    return;
+  }
+
+  if (requestPath === "/api/auth/password-reset/complete" && method === "POST") {
+    writeJson(res, 200, { ok: true, ...(await store.resetPassword(body)) }, {
+      "Set-Cookie": clearSessionCookie(req)
+    });
+    return;
+  }
+
   if (requestPath === "/api/integrations/github/webhook" && method === "POST") {
     const secret = process.env.PATCHPROOF_GITHUB_WEBHOOK_SECRET || "";
     if (!secret) {
@@ -319,12 +345,39 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
       writeJson(res, 202, { ok: true, command, accepted: Boolean(command), mapped: false });
       return;
     }
+    const settings = await store.getSettings(project.orgId);
+    if (!isRepositoryAllowed(settings.github?.allowedRepositories, repoFullName)) {
+      writeJson(res, 202, {
+        ok: true,
+        command,
+        accepted: false,
+        mapped: true,
+        error: { message: `Repository ${repoFullName} is not allowed by GitHub settings.` }
+      });
+      return;
+    }
+    let queuedInput;
+    try {
+      queuedInput = resolveQueuedRunInput({
+        project,
+        input: body.input
+      });
+    } catch (error) {
+      writeJson(res, 202, {
+        ok: true,
+        command,
+        accepted: false,
+        mapped: true,
+        error: { message: error.message }
+      });
+      return;
+    }
     const { run, job } = await store.createRun({
       orgId: project.orgId,
       projectId: project.id,
       actorUserId: null,
       trigger: `github:${command}`,
-      input: body.input || project.config?.github?.repairInput || project.config?.repairInput || {},
+      input: queuedInput,
       metadata: {
         github: {
           command,
@@ -336,7 +389,6 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
         }
       }
     });
-    const settings = await store.getSettings(project.orgId);
     const runnerPolicy = buildRunnerPolicy({ orgId: project.orgId, projectId: project.id, runId: run.id, settings, config: project.config || {} });
     const payload = { jobId: job.id, runId: run.id, orgId: project.orgId, projectId: project.id, runnerPolicy };
     await queue.enqueue(payload);
@@ -379,6 +431,23 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
   if (requestPath === "/api/orgs" && method === "POST") {
     if (auth.apiKey) throw forbidden("API keys cannot create organizations.");
     writeJson(res, 201, { ok: true, org: await store.createOrg({ actorUserId: auth.user.id, name: body.name }) });
+    return;
+  }
+
+  if (requestPath === "/api/sessions" && method === "GET") {
+    if (auth.apiKey) throw forbidden("API keys do not have browser sessions.");
+    writeJson(res, 200, { ok: true, sessions: await store.listSessions({ orgId: primaryOrgId, userId: auth.user.id }) });
+    return;
+  }
+
+  const ownSessionMatch = requestPath.match(/^\/api\/sessions\/([^/]+)$/);
+  if (ownSessionMatch && method === "DELETE") {
+    if (auth.apiKey) throw forbidden("API keys do not have browser sessions.");
+    const sessions = await store.listSessions({ orgId: primaryOrgId, userId: auth.user.id });
+    if (!sessions.some((session) => session.id === ownSessionMatch[1])) throw notFound("Session");
+    const revoked = await store.revokeSession({ orgId: primaryOrgId, actorUserId: auth.user.id, sessionId: ownSessionMatch[1] });
+    const headers = auth.session?.id === ownSessionMatch[1] ? { "Set-Cookie": clearSessionCookie(req) } : {};
+    writeJson(res, 200, { ok: true, session: revoked }, headers);
     return;
   }
 
@@ -425,12 +494,16 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     requirePermission(role, "run:create");
     const project = await store.getProject(projectRunMatch[1]);
     if (!project || project.orgId !== primaryOrgId) throw notFound("Project");
+    const queuedInput = resolveQueuedRunInput({
+      project,
+      input: body.input
+    });
     const { run, job } = await store.createRun({
       orgId: primaryOrgId,
       projectId: project.id,
       actorUserId: actorUserId(auth),
       trigger: body.trigger || "manual",
-      input: body.input,
+      input: queuedInput,
       metadata: body.metadata || {}
     });
     const settings = await store.getSettings(primaryOrgId);
@@ -532,7 +605,12 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
         repo,
         base: detail.project?.defaultBranch || "main",
         run: detail.run,
-        certificate
+        certificate,
+        files: body.files || [],
+        allowedFilePaths:
+          detail.project?.config?.github?.allowedFilePaths ||
+          detail.project?.config?.project?.allowedPaths ||
+          []
       });
     }
     await store.addAuditEvent({
@@ -612,6 +690,69 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     writeJson(res, 200, {
       ok: true,
       settings: maskSettingsSecrets(await store.updateSettings({ orgId: primaryOrgId, actorUserId: actorUserId(auth), patch: body }))
+    });
+    return;
+  }
+
+  if (requestPath === "/api/admin/invitations" && method === "GET") {
+    requirePermission(role, "admin:read");
+    writeJson(res, 200, { ok: true, invitations: await store.listInvitations(primaryOrgId) });
+    return;
+  }
+
+  if (requestPath === "/api/admin/invitations" && method === "POST") {
+    requirePermission(role, "admin:write");
+    writeJson(res, 201, {
+      ok: true,
+      ...(await store.createInvitation({
+        orgId: primaryOrgId,
+        actorUserId: actorUserId(auth),
+        email: body.email,
+        name: body.name || "",
+        role: body.role || "developer",
+        expiresInDays: body.expiresInDays || 7
+      }))
+    });
+    return;
+  }
+
+  const invitationMatch = requestPath.match(/^\/api\/admin\/invitations\/([^/]+)$/);
+  if (invitationMatch && method === "DELETE") {
+    requirePermission(role, "admin:write");
+    writeJson(res, 200, {
+      ok: true,
+      invitation: await store.revokeInvitation({ orgId: primaryOrgId, actorUserId: actorUserId(auth), invitationId: invitationMatch[1] })
+    });
+    return;
+  }
+
+  if (requestPath === "/api/admin/password-resets" && method === "POST") {
+    requirePermission(role, "admin:write");
+    writeJson(res, 201, {
+      ok: true,
+      ...(await store.createPasswordReset({
+        orgId: primaryOrgId,
+        actorUserId: actorUserId(auth),
+        email: body.email,
+        userId: body.userId,
+        expiresInMinutes: body.expiresInMinutes || 60
+      }))
+    });
+    return;
+  }
+
+  if (requestPath === "/api/admin/sessions" && method === "GET") {
+    requirePermission(role, "admin:read");
+    writeJson(res, 200, { ok: true, sessions: await store.listSessions({ orgId: primaryOrgId }) });
+    return;
+  }
+
+  const adminSessionMatch = requestPath.match(/^\/api\/admin\/sessions\/([^/]+)$/);
+  if (adminSessionMatch && method === "DELETE") {
+    requirePermission(role, "admin:write");
+    writeJson(res, 200, {
+      ok: true,
+      session: await store.revokeSession({ orgId: primaryOrgId, actorUserId: actorUserId(auth), sessionId: adminSessionMatch[1] })
     });
     return;
   }
@@ -700,20 +841,48 @@ function buildOpenApiDocument(req) {
         post: {
           summary: "Bootstrap the first owner account",
           security: [],
-          responses: { "201": { description: "Bootstrap complete" } }
+          requestBody: jsonRequest("BootstrapRequest"),
+          responses: { "201": jsonResponse("Bootstrap complete", "AuthResponse"), "409": errorResponse("Already bootstrapped") }
         }
       },
       "/auth/login": {
         post: {
           summary: "Create an HttpOnly browser session or return a bearer token",
           security: [],
-          responses: { "200": { description: "Authenticated" } }
+          requestBody: jsonRequest("LoginRequest"),
+          responses: { "200": jsonResponse("Authenticated", "AuthResponse"), "401": errorResponse("Invalid credentials") }
+        }
+      },
+      "/auth/password-reset/complete": {
+        post: {
+          summary: "Complete a one-time password reset",
+          security: [],
+          requestBody: jsonRequest("PasswordResetCompleteRequest"),
+          responses: { "200": jsonResponse("Password reset complete", "UserResponse"), "400": errorResponse("Invalid or expired token") }
+        }
+      },
+      "/invitations/accept": {
+        post: {
+          summary: "Accept an organization invitation and create a browser session",
+          security: [],
+          requestBody: jsonRequest("AcceptInvitationRequest"),
+          responses: { "200": jsonResponse("Invitation accepted", "AuthResponse"), "400": errorResponse("Invalid or expired token") }
         }
       },
       "/me": { get: { summary: "Current authenticated user", responses: { "200": { description: "User and orgs" } } } },
+      "/sessions": {
+        get: { summary: "List current user's browser sessions", responses: { "200": jsonResponse("Sessions", "SessionsResponse") } }
+      },
+      "/sessions/{sessionId}": {
+        delete: {
+          summary: "Revoke one of the current user's browser sessions",
+          parameters: [pathParameter("sessionId")],
+          responses: { "200": jsonResponse("Session revoked", "SessionResponse"), "404": errorResponse("Session not found") }
+        }
+      },
       "/projects": {
-        get: { summary: "List projects", responses: { "200": { description: "Projects" } } },
-        post: { summary: "Create project", responses: { "201": { description: "Project created" } } }
+        get: { summary: "List projects", responses: { "200": jsonResponse("Projects", "ProjectsResponse") } },
+        post: { summary: "Create project", requestBody: jsonRequest("CreateProjectRequest"), responses: { "201": jsonResponse("Project created", "ProjectResponse") } }
       },
       "/projects/{projectId}": {
         get: {
@@ -731,7 +900,8 @@ function buildOpenApiDocument(req) {
         post: {
           summary: "Queue a PatchProof run",
           parameters: [pathParameter("projectId")],
-          responses: { "202": { description: "Run queued" } }
+          requestBody: jsonRequest("CreateRunRequest"),
+          responses: { "202": jsonResponse("Run queued", "QueuedRunResponse") }
         }
       },
       "/runs/{runId}": {
@@ -771,27 +941,61 @@ function buildOpenApiDocument(req) {
       },
       "/runs/{runId}/apply-patch": {
         post: {
-          summary: "Record or request patch application",
+          summary: "Record patch application or request a GitHub PR",
           parameters: [pathParameter("runId")],
+          requestBody: jsonRequest("ApplyPatchRequest"),
           responses: { "200": { description: "Apply request recorded" } }
         }
       },
       "/admin/settings": {
         get: { summary: "Read masked admin settings", responses: { "200": { description: "Settings" } } },
-        patch: { summary: "Update admin settings", responses: { "200": { description: "Settings updated" } } }
+        patch: { summary: "Update admin settings", requestBody: jsonRequest("SettingsPatch"), responses: { "200": { description: "Settings updated" } } }
       },
       "/admin/runners": { get: { summary: "List runner heartbeats", responses: { "200": { description: "Runners" } } } },
       "/admin/retention": { post: { summary: "Plan or apply retention cleanup", responses: { "200": { description: "Retention result" } } } },
       "/admin/reconcile": { post: { summary: "Plan or apply stale-run reconciliation", responses: { "200": { description: "Reconciliation result" } } } },
+      "/admin/invitations": {
+        get: { summary: "List organization invitations", responses: { "200": jsonResponse("Invitations", "InvitationsResponse") } },
+        post: {
+          summary: "Create an organization invitation",
+          requestBody: jsonRequest("CreateInvitationRequest"),
+          responses: { "201": jsonResponse("Invitation and one-time token", "CreateInvitationResponse") }
+        }
+      },
+      "/admin/invitations/{invitationId}": {
+        delete: {
+          summary: "Revoke an organization invitation",
+          parameters: [pathParameter("invitationId")],
+          responses: { "200": jsonResponse("Invitation revoked", "InvitationResponse") }
+        }
+      },
+      "/admin/password-resets": {
+        post: {
+          summary: "Create a one-time password reset token for an organization member",
+          requestBody: jsonRequest("CreatePasswordResetRequest"),
+          responses: { "201": jsonResponse("Password reset token created", "CreatePasswordResetResponse") }
+        }
+      },
+      "/admin/sessions": {
+        get: { summary: "List organization browser sessions", responses: { "200": jsonResponse("Sessions", "SessionsResponse") } }
+      },
+      "/admin/sessions/{sessionId}": {
+        delete: {
+          summary: "Revoke an organization browser session",
+          parameters: [pathParameter("sessionId")],
+          responses: { "200": jsonResponse("Session revoked", "SessionResponse") }
+        }
+      },
       "/admin/api-keys": {
         get: { summary: "List API keys", responses: { "200": { description: "API keys" } } },
-        post: { summary: "Create API key", responses: { "201": { description: "API key and one-time token" } } }
+        post: { summary: "Create API key", requestBody: jsonRequest("CreateApiKeyRequest"), responses: { "201": { description: "API key and one-time token" } } }
       },
       "/audit-events": { get: { summary: "List audit events", responses: { "200": { description: "Audit events" } } } },
       "/run": {
         post: {
-          summary: "Local/demo quick run through isolated hosted runner",
+          summary: "Local/demo quick run through isolated hosted runner. Disabled by default when NODE_ENV=production unless PATCHPROOF_ENABLE_QUICK_RUN=true.",
           security: [],
+          requestBody: jsonRequest("PatchProofInput"),
           responses: { "200": { description: "PatchProof result" } }
         }
       }
@@ -800,13 +1004,93 @@ function buildOpenApiDocument(req) {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer" },
         cookieAuth: { type: "apiKey", in: "cookie", name: SESSION_COOKIE_NAME }
-      }
+      },
+      schemas: openApiSchemas()
     }
   };
 }
 
 function pathParameter(name) {
   return { name, in: "path", required: true, schema: { type: "string" } };
+}
+
+function jsonRequest(schemaName) {
+  return {
+    required: true,
+    content: {
+      "application/json": {
+        schema: { $ref: `#/components/schemas/${schemaName}` }
+      }
+    }
+  };
+}
+
+function jsonResponse(description, schemaName) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: { $ref: `#/components/schemas/${schemaName}` }
+      }
+    }
+  };
+}
+
+function errorResponse(description) {
+  return jsonResponse(description, "ErrorResponse");
+}
+
+function openApiSchemas() {
+  const id = { type: "string", examples: ["run_0123456789abcdef"] };
+  const timestamp = { type: ["string", "null"], format: "date-time" };
+  const role = { type: "string", enum: ["owner", "admin", "developer", "reviewer", "auditor"] };
+  return {
+    ErrorResponse: {
+      type: "object",
+      required: ["ok", "error"],
+      properties: { ok: { const: false }, error: { type: "object", required: ["message"], properties: { message: { type: "string" } } } }
+    },
+    User: { type: "object", required: ["id", "email", "name"], properties: { id, email: { type: "string", format: "email" }, name: { type: "string" }, createdAt: timestamp } },
+    Org: { type: "object", required: ["id", "name"], properties: { id, name: { type: "string" }, role, createdAt: timestamp } },
+    AuthResponse: {
+      type: "object",
+      required: ["ok", "user", "orgs"],
+      properties: { ok: { const: true }, user: { $ref: "#/components/schemas/User" }, orgs: { type: "array", items: { $ref: "#/components/schemas/Org" } }, token: { type: "string", description: "Returned only when returnToken is true." } }
+    },
+    UserResponse: { type: "object", properties: { ok: { const: true }, user: { $ref: "#/components/schemas/User" } } },
+    BootstrapRequest: { type: "object", required: ["email", "password"], properties: { email: { type: "string", format: "email" }, password: { type: "string", minLength: 8 }, name: { type: "string" }, orgName: { type: "string" }, returnToken: { type: "boolean" } } },
+    LoginRequest: { type: "object", required: ["email", "password"], properties: { email: { type: "string", format: "email" }, password: { type: "string" }, returnToken: { type: "boolean" } } },
+    AcceptInvitationRequest: { type: "object", required: ["token", "password"], properties: { token: { type: "string" }, password: { type: "string", minLength: 8 }, name: { type: "string" }, returnToken: { type: "boolean" } } },
+    PasswordResetCompleteRequest: { type: "object", required: ["token", "password"], properties: { token: { type: "string" }, password: { type: "string", minLength: 8 } } },
+    Project: { type: "object", properties: { id, orgId: id, name: { type: "string" }, repoUrl: { type: "string" }, defaultBranch: { type: "string" }, config: { type: ["object", "null"], additionalProperties: true }, createdAt: timestamp } },
+    CreateProjectRequest: { type: "object", required: ["name"], properties: { name: { type: "string" }, repoUrl: { type: "string" }, defaultBranch: { type: "string" }, config: { type: "object", additionalProperties: true }, configText: { type: "string" } } },
+    ProjectsResponse: { type: "object", properties: { ok: { const: true }, projects: { type: "array", items: { $ref: "#/components/schemas/Project" } } } },
+    ProjectResponse: { type: "object", properties: { ok: { const: true }, project: { $ref: "#/components/schemas/Project" } } },
+    PatchProofInput: { type: "object", required: ["source", "tests"], additionalProperties: true, properties: { language: { type: "string", enum: ["javascript", "python"] }, source: { type: "string" }, tests: { type: "array", items: { type: "object", additionalProperties: true } }, bugReport: { type: "string" }, precondition: { type: "string" }, mayChange: { type: "string" }, postcondition: { type: "string" } } },
+    CreateRunRequest: { type: "object", properties: { input: { $ref: "#/components/schemas/PatchProofInput" }, trigger: { type: "string" }, metadata: { type: "object", additionalProperties: true } } },
+    Run: { type: "object", properties: { id, orgId: id, projectId: id, trigger: { type: "string" }, status: { type: "string" }, evidenceScore: { type: "number" }, metadata: { type: "object", additionalProperties: true }, createdAt: timestamp, updatedAt: timestamp } },
+    Job: { type: "object", properties: { id, runId: id, status: { type: "string" }, phase: { type: "string" }, runnerId: { type: ["string", "null"] }, attempt: { type: "integer" }, createdAt: timestamp, startedAt: timestamp, completedAt: timestamp } },
+    QueuedRunResponse: { type: "object", properties: { ok: { const: true }, queued: { type: "boolean" }, run: { $ref: "#/components/schemas/Run" }, job: { $ref: "#/components/schemas/Job" } } },
+    Invitation: { type: "object", properties: { id, orgId: id, email: { type: "string" }, name: { type: "string" }, role, createdByUserId: id, createdAt: timestamp, expiresAt: timestamp, acceptedAt: timestamp, revokedAt: timestamp } },
+    CreateInvitationRequest: { type: "object", required: ["email"], properties: { email: { type: "string", format: "email" }, name: { type: "string" }, role: { type: "string", enum: ["admin", "developer", "reviewer", "auditor"] }, expiresInDays: { type: "integer", minimum: 1 } } },
+    InvitationsResponse: { type: "object", properties: { ok: { const: true }, invitations: { type: "array", items: { $ref: "#/components/schemas/Invitation" } } } },
+    InvitationResponse: { type: "object", properties: { ok: { const: true }, invitation: { $ref: "#/components/schemas/Invitation" } } },
+    CreateInvitationResponse: { type: "object", properties: { ok: { const: true }, invitation: { $ref: "#/components/schemas/Invitation" }, token: { type: "string", description: "One-time invitation token. Display once and deliver out of band." } } },
+    CreatePasswordResetRequest: { type: "object", properties: { email: { type: "string", format: "email" }, userId: id, expiresInMinutes: { type: "integer", minimum: 5 } } },
+    CreatePasswordResetResponse: { type: "object", properties: { ok: { const: true }, passwordReset: { type: "object", additionalProperties: true }, token: { type: "string", description: "One-time reset token. Display once and deliver out of band." } } },
+    Session: { type: "object", properties: { id, userId: id, user: { anyOf: [{ $ref: "#/components/schemas/User" }, { type: "null" }] }, createdAt: timestamp, expiresAt: timestamp } },
+    SessionsResponse: { type: "object", properties: { ok: { const: true }, sessions: { type: "array", items: { $ref: "#/components/schemas/Session" } } } },
+    SessionResponse: { type: "object", properties: { ok: { const: true }, session: { $ref: "#/components/schemas/Session" } } },
+    CreateApiKeyRequest: { type: "object", required: ["name"], properties: { name: { type: "string" }, role: { type: "string", enum: ["developer", "reviewer", "auditor"] } } },
+    SettingsPatch: { type: "object", additionalProperties: true },
+    ApplyPatchRequest: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["manual-download", "github-pr"] },
+        files: { type: "array", items: { type: "object", required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } } }
+      }
+    }
+  };
 }
 
 function writeJson(res, statusCode, value, headers = {}) {
@@ -925,6 +1209,25 @@ function renderPrometheusMetrics(metrics) {
     `patchproof_runs_rejected_total ${metrics.runsRejected}`,
     `patchproof_runs_failed_total ${metrics.runsFailed}`,
     `patchproof_runs_cancelled_total ${metrics.runsCancelled || 0}`,
+    "# HELP patchproof_run_duration_ms_avg Average terminal run duration in milliseconds.",
+    "# TYPE patchproof_run_duration_ms_avg gauge",
+    `patchproof_run_duration_ms_avg ${metrics.runDurationMsAvg || 0}`,
+    "# HELP patchproof_jobs_total PatchProof jobs by status.",
+    "# TYPE patchproof_jobs_total gauge",
+    `patchproof_jobs_total{status="queued"} ${metrics.jobsQueued || 0}`,
+    `patchproof_jobs_total{status="running"} ${metrics.jobsRunning || 0}`,
+    `patchproof_jobs_total{status="completed"} ${metrics.jobsCompleted || 0}`,
+    `patchproof_jobs_total{status="failed"} ${metrics.jobsFailed || 0}`,
+    `patchproof_jobs_total{status="cancelled"} ${metrics.jobsCancelled || 0}`,
+    "# HELP patchproof_job_duration_ms_avg Average completed job duration in milliseconds.",
+    "# TYPE patchproof_job_duration_ms_avg gauge",
+    `patchproof_job_duration_ms_avg ${metrics.jobDurationMsAvg || 0}`,
+    "# HELP patchproof_model_calls_total Jobs that invoked an external model provider.",
+    "# TYPE patchproof_model_calls_total counter",
+    `patchproof_model_calls_total ${metrics.modelCallsTotal || 0}`,
+    "# HELP patchproof_model_errors_total Failed jobs that invoked an external model provider.",
+    "# TYPE patchproof_model_errors_total counter",
+    `patchproof_model_errors_total ${metrics.modelErrorsTotal || 0}`,
     ""
   ].join("\n");
 }

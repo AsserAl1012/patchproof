@@ -6,12 +6,18 @@ const DEFAULT_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
 export function createJobQueue(options = {}) {
+  const redisOptions = { ...(options.redis || {}), ...options };
+  const redisUrl = resolveRedisUrl(redisOptions);
   const driver =
     options.driver ||
     process.env.PATCHPROOF_QUEUE_DRIVER ||
-    (process.env.REDIS_URL ? "redis" : "memory");
-  if (driver === "redis") return new RedisJobQueue(options.redis || options);
+    (redisUrl ? "redis" : "memory");
+  if (driver === "redis") return new RedisJobQueue({ ...redisOptions, url: redisUrl || redisOptions.url });
   return new MemoryJobQueue(options.memory || options);
+}
+
+export function resolveRedisUrl(options = {}) {
+  return options.url || process.env.REDIS_URL || process.env.PATCHPROOF_REDIS_URL || "";
 }
 
 export class MemoryJobQueue {
@@ -150,7 +156,7 @@ export class RedisJobQueue {
     this.client =
       options.client ||
       createClient({
-        url: options.url || process.env.REDIS_URL || "redis://127.0.0.1:6379"
+        url: resolveRedisUrl(options) || "redis://127.0.0.1:6379"
       });
     this.connected = Boolean(options.client);
     this.client.on?.("error", () => {});

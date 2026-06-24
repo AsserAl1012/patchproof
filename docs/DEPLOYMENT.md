@@ -1,12 +1,12 @@
 # Hosted Deployment
 
-PatchProof now includes a hosted API path:
+PatchProof includes a local/demo hosted API path:
 
 ```text
 POST /api/run
 ```
 
-The browser app uses this endpoint by default. The server runs validation in a separate Node process with:
+The server runs validation in a separate Node process with:
 
 - Node permission mode;
 - no filesystem write permission;
@@ -17,11 +17,11 @@ The browser app uses this endpoint by default. The server runs validation in a s
 - request-size limit;
 - per-address rate limiting.
 
-This is suitable for self-hosted/private SaaS deployments when paired with the queued Docker runner. It is still not a substitute for a professional security review before broad hosted arbitrary-code exposure.
+This endpoint is enabled for local/demo mode and disabled automatically when `NODE_ENV=production` unless `PATCHPROOF_ENABLE_QUICK_RUN=true` is set explicitly. Production self-hosted deployments should use authenticated projects, queued jobs, and Docker runners. It is still not a substitute for a professional security review before broad hosted arbitrary-code exposure.
 
-Private SaaS mode adds authenticated organizations, projects, persistent runs, queued jobs, audit events, admin settings, GitHub integration, artifact storage, and runner health APIs. Production mode uses Postgres, Redis, and S3/MinIO. JSON storage remains available only for local/demo usage.
+Private SaaS mode adds authenticated organizations, invitations, password reset tokens, session revocation, projects, persistent runs, queued jobs, audit events, admin settings, GitHub integration, artifact storage, and runner health APIs. Production mode uses Postgres, Redis, and S3/MinIO. JSON storage remains available only for local/demo usage.
 
-Operational hardening now includes request IDs, optional JSON access logs, webhook delivery deduplication, graceful runner shutdown, run cancellation, stale-run reconciliation, and explicit retention cleanup for expired sessions, artifacts, audit events, and webhook delivery records.
+Operational hardening now includes request IDs, optional JSON access logs, Prometheus metrics for run/job/model activity, webhook delivery deduplication, graceful runner shutdown, run cancellation, stale-run reconciliation, and explicit retention cleanup for expired sessions, artifacts, audit events, and webhook delivery records.
 
 Generate deployment secrets before first boot:
 

@@ -10,7 +10,8 @@ import {
   extractFrameworkTests,
   initializeRepositoryConfig,
   inspectRepository,
-  listRepositoryTargets
+  listRepositoryTargets,
+  runRepositoryTestCommand
 } from "../repository-adapter.js";
 import { runPatchProof } from "../runtime.js";
 
@@ -400,6 +401,44 @@ test("repository inspector detects Python pytest metadata", async () => {
   assert.ok(report.frameworks.includes("pytest"));
   assert.deepEqual(report.testCommands.map((item) => item.command), ["python -m pytest"]);
   assert.ok(report.suggestions.next.some((item) => item.includes("patchproof.yml")));
+});
+
+test("repository adapter runs configured project test commands", async () => {
+  const repo = await fixtureRepo("repo-test-command-");
+  await writeFile(join(repo, "package.json"), JSON.stringify({
+    scripts: { test: "node test-command.js" }
+  }, null, 2), "utf8");
+  await writeFile(join(repo, "test-command.js"), "console.log('project tests passed');\n", "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: javascript
+  testCommand: npm test
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  const result = await runRepositoryTestCommand({ repoRoot: repo });
+  assert.equal(result.ok, true);
+  assert.equal(result.command, "npm test");
+  assert.match(result.stdout, /project tests passed/);
+});
+
+test("repository adapter rejects shell-chained project test commands", async () => {
+  const repo = await fixtureRepo("repo-test-command-unsafe-");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: javascript
+  testCommand: npm test && node steal.js
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  await assert.rejects(
+    () => runRepositoryTestCommand({ repoRoot: repo }),
+    /must not contain shell chaining/
+  );
 });
 
 async function fixtureRepo(prefix) {

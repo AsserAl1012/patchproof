@@ -73,6 +73,35 @@ DELETE /api/admin/api-keys/:id
 
 API keys may use `developer`, `reviewer`, or `auditor` roles. A developer key can create runs and download certificates but cannot read or change admin settings.
 
+## Account Operations
+
+Owners/admins can create one-time invitation tokens, create one-time password reset tokens, and revoke browser sessions:
+
+```text
+POST /api/v1/admin/invitations
+GET /api/v1/admin/invitations
+DELETE /api/v1/admin/invitations/:id
+POST /api/v1/admin/password-resets
+GET /api/v1/admin/sessions
+DELETE /api/v1/admin/sessions/:id
+```
+
+Public token completion endpoints:
+
+```text
+POST /api/v1/invitations/accept
+POST /api/v1/auth/password-reset/complete
+```
+
+Invitation and reset tokens are returned once so a self-hosted operator can deliver them through their own trusted channel. Stored tokens are SHA-256 hashes. Completing a password reset invalidates the user's existing browser sessions.
+
+Users can list and revoke their own browser sessions:
+
+```text
+GET /api/v1/sessions
+DELETE /api/v1/sessions/:id
+```
+
 ## Projects
 
 Create one project per repository or manually uploaded codebase. Each project may include a `patchproof.yml` policy.
@@ -128,9 +157,11 @@ Use:
 /metrics
 ```
 
-Every response includes `X-Request-ID`. Set `PATCHPROOF_ACCESS_LOGS=json` to emit JSON access logs with request ID, path, status, and duration. The dashboard exposes runner health, settings, and audit logs for owners/admins.
+Every response includes `X-Request-ID`. Set `PATCHPROOF_ACCESS_LOGS=json` to emit JSON access logs with request ID, path, status, and duration. Metrics include run totals, job status counts, queue depth, runner count, average run/job duration, audit event count, and model-call/error counters. The dashboard exposes runner health, settings, and audit logs for owners/admins.
 
 The stable v1 HTTP API is available under `/api/v1`. The OpenAPI document is served at `/api/v1/openapi.json`.
+
+Anonymous `POST /api/run` is a local/demo quick-run endpoint. It is disabled automatically when `NODE_ENV=production` unless `PATCHPROOF_ENABLE_QUICK_RUN=true` is set explicitly. Production project execution should use authenticated projects, queued jobs, and Docker runners.
 
 Run workers with:
 

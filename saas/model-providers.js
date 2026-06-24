@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 const SUPPORTED_PROVIDERS = new Set([
   "disabled",
+  "openai",
+  "openai-responses",
   "openai-compatible",
   "azure-openai",
   "local"
@@ -16,7 +18,7 @@ export function normalizeModelProvider(settings = {}) {
   const baseUrl =
     process.env.PATCHPROOF_MODEL_BASE_URL ||
     settings.baseUrl ||
-    (provider === "openai-compatible" ? "https://api.openai.com/v1" : "");
+    (["openai", "openai-responses", "openai-compatible"].includes(provider) ? "https://api.openai.com/v1" : "");
   const model =
     process.env.PATCHPROOF_MODEL_NAME ||
     settings.model ||
@@ -123,19 +125,7 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
     method: "POST",
     headers,
     signal: AbortSignal.timeout(normalized.timeoutMs),
-    body: JSON.stringify({
-      model: normalized.model,
-      messages: [
-        {
-          role: "system",
-          content: `You are a conservative ${String(input.language || "javascript")} repair generator. Output valid JSON only.`
-        },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.2,
-      max_tokens: normalized.maxTokens,
-      n: Math.min(normalized.maxCandidates, 8)
-    })
+    body: JSON.stringify(modelRequestBody(normalized, input, prompt))
   }).catch((error) => {
     throw new Error(`Model provider request failed: ${error.message}`);
   });
@@ -156,8 +146,7 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
 
   const candidates = [];
   const seen = new Set();
-  for (const choice of payload.choices || []) {
-    const content = messageText(choice?.message?.content ?? choice?.text ?? "");
+  for (const content of responseCandidateTexts(payload, normalized)) {
     for (const candidate of parseCandidateContent(content)) {
       const source = String(candidate.source || "").trim();
       if (!source || source === String(input.source || "").trim() || seen.has(source)) continue;
@@ -175,7 +164,7 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
   }
 
   if (!candidates.length) {
-    throw new Error("Model provider returned no usable JavaScript repair candidates.");
+    throw new Error(`Model provider returned no usable ${String(input.language || "javascript")} repair candidates.`);
   }
 
   return {
@@ -192,6 +181,11 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
 }
 
 function modelEndpoint(settings) {
+  if (usesResponsesApi(settings)) {
+    return /\/responses(?:\?|$)/.test(settings.baseUrl)
+      ? settings.baseUrl
+      : `${settings.baseUrl}/responses`;
+  }
   if (settings.provider !== "azure-openai") {
     return /\/chat\/completions(?:\?|$)/.test(settings.baseUrl)
       ? settings.baseUrl
@@ -205,6 +199,83 @@ function modelEndpoint(settings) {
       : `${settings.baseUrl}/openai/deployments/${encodeURIComponent(settings.model)}/chat/completions`;
   const separator = base.includes("?") ? "&" : "?";
   return `${base}${separator}api-version=${encodeURIComponent(settings.apiVersion)}`;
+}
+
+function modelRequestBody(settings, input, prompt) {
+  const language = String(input.language || "javascript");
+  const system = `You are a conservative ${language} repair generator. Output valid JSON only.`;
+  if (usesResponsesApi(settings)) {
+    return {
+      model: settings.model,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: system }] },
+        { role: "user", content: [{ type: "input_text", text: prompt }] }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "patchproof_repair_candidates",
+          strict: true,
+          schema: repairCandidateSchema()
+        }
+      },
+      temperature: 0.2,
+      max_output_tokens: settings.maxTokens
+    };
+  }
+  return {
+    model: settings.model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: settings.maxTokens,
+    n: Math.min(settings.maxCandidates, 8)
+  };
+}
+
+function responseCandidateTexts(payload, settings) {
+  if (!usesResponsesApi(settings)) {
+    return (payload.choices || []).map((choice) => messageText(choice?.message?.content ?? choice?.text ?? ""));
+  }
+  const values = [];
+  if (typeof payload.output_text === "string") values.push(payload.output_text);
+  for (const item of payload.output || []) {
+    for (const content of item.content || []) {
+      if (typeof content.text === "string") values.push(content.text);
+      else if (typeof content.content === "string") values.push(content.content);
+    }
+  }
+  return values;
+}
+
+function usesResponsesApi(settings) {
+  return ["openai", "openai-responses"].includes(settings.provider);
+}
+
+function repairCandidateSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["candidates"],
+    properties: {
+      candidates: {
+        type: "array",
+        maxItems: 8,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title", "rationale", "source"],
+          properties: {
+            title: { type: "string" },
+            rationale: { type: "string" },
+            source: { type: "string" }
+          }
+        }
+      }
+    }
+  };
 }
 
 function parseCandidateContent(content) {

@@ -23,6 +23,10 @@ const checks = [
     pattern: new RegExp(`patchproof:${escapeRegex(version)}`)
   },
   {
+    file: "saas/runner-policy.js",
+    pattern: new RegExp(`patchproof:${escapeRegex(version)}`)
+  },
+  {
     file: "helm/patchproof/Chart.yaml",
     pattern: new RegExp(`\\bversion:\\s*${escapeRegex(version)}\\b[\\s\\S]*\\bappVersion:\\s*"${escapeRegex(version)}"`)
   },

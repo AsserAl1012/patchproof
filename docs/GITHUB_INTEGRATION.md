@@ -59,4 +59,4 @@ When a mapped PR or issue receives a slash command, PatchProof:
 
 Delivery dedupe records are retained for 30 days and are cleaned by `patchproof retention`.
 
-Optional patch PR creation is controlled by the org/project GitHub apply-patch policy. The current engine emits function-level diffs, so PatchProof opens a controlled branch containing the generated patch artifact unless a project-specific source-file workflow is added.
+Optional patch PR creation is controlled by the org/project GitHub apply-patch policy. When a caller supplies reviewed repository file updates to `POST /api/v1/runs/:id/apply-patch` with `mode: "github-pr"`, PatchProof opens a controlled branch and commits those file contents directly. If no reviewed file updates are supplied, it falls back to committing the generated `.patch` artifact under `patchproof-patches/`.

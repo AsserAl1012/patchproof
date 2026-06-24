@@ -1,8 +1,8 @@
-import { createInputFromExample, examples } from "../engine.js";
 import { resolveRunnerIsolation, runPatchProofInRunner } from "../sandbox/docker-runner.js";
 import { buildRunnerPolicy } from "./runner-policy.js";
 import { generateModelCandidates } from "./model-providers.js";
 import { buildCompletionComment, postGitHubComment } from "./github-app.js";
+import { resolveQueuedRunInput } from "./run-input.js";
 
 const DEFAULT_RUNNER_ID = `runner_${process.pid}_${Math.random().toString(16).slice(2, 8)}`;
 
@@ -42,13 +42,16 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
       repair.maxCandidates,
       settings.modelProvider?.maxCandidates || 8
     );
-    const generation = await generateModelCandidates({
+    const modelStartedAt = Date.now();
+    const generation = await generateModelCandidatesWithFallback({
       settings: {
         ...(settings.modelProvider || {}),
         maxCandidates: configuredCandidateLimit
       },
-      input
+      input,
+      logs
     });
+    const modelDurationMs = Date.now() - modelStartedAt;
     logs.push(
       `model ${generation.provider}/${generation.model}: ${generation.candidates.length} candidate(s)`
     );
@@ -113,7 +116,13 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
           value: {
             runnerId,
             runnerPolicy,
-            resourceUsage: result.resourceUsage || {},
+            resourceUsage: {
+              ...(result.resourceUsage || {}),
+              modelProvider: generation.provider,
+              model: generation.model,
+              modelDurationMs,
+              modelCandidates: generation.candidates.length
+            },
             completedAt: new Date().toISOString()
           }
         })
@@ -125,7 +134,13 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
       status: certificate.status,
       logs: [...logs, ...resultLogs],
       artifacts,
-      resourceUsage: result.resourceUsage || {}
+      resourceUsage: {
+        ...(result.resourceUsage || {}),
+        modelProvider: generation.provider,
+        model: generation.model,
+        modelDurationMs,
+        modelCandidates: generation.candidates.length
+      }
     });
     await queue.ack?.(payload);
     await maybePostGitHubCompletion({ store, settings, detail, completed, certificate });
@@ -218,11 +233,29 @@ export async function runRunnerLoop({ store, queue, artifactStore, runnerId = DE
 }
 
 function resolveRunInput(detail) {
-  const language = detail.run.input?.language || detail.project?.config?.project?.language || "javascript";
-  if (detail.run.input?.source) return { ...detail.run.input, language };
-  const configInput = detail.project?.config?.repairInput || detail.project?.config?.github?.repairInput;
-  if (configInput?.source) return { ...configInput, language: configInput.language || language };
-  return createInputFromExample(examples[0]);
+  return resolveQueuedRunInput({
+    project: detail.project,
+    input: detail.run.input
+  });
+}
+
+async function generateModelCandidatesWithFallback({ settings, input, logs }) {
+  try {
+    return await generateModelCandidates({ settings, input });
+  } catch (error) {
+    logs.push(`model generation failed: ${error.message}; continuing with local templates`);
+    return {
+      candidates: [],
+      provenance: {
+        provider: settings.provider || "unknown",
+        model: settings.model || "",
+        error: error.message
+      },
+      provider: settings.provider || "unknown",
+      model: settings.model || "",
+      usage: { error: error.message, returnedCandidates: 0 }
+    };
+  }
 }
 
 function positiveInteger(value, fallback) {

@@ -46,6 +46,8 @@ try {
     await inspectCommand(args.slice(1));
   } else if (command === "targets") {
     await targetsCommand(args.slice(1));
+  } else if (command === "test") {
+    await testCommand(args.slice(1));
   } else if (command === "run") {
     await runCommand(args.slice(1));
   } else if (command === "apply") {
@@ -70,6 +72,8 @@ async function runCommand(runArgs) {
   const outPath = readOption(runArgs, "--out");
   const applyPatch = runArgs.includes("--apply");
   const dryRun = runArgs.includes("--dry-run");
+  const verifyCommand = runArgs.includes("--verify-command");
+  const testCommandOverride = readOption(runArgs, "--test-command");
   const modes = [scenarioId, inputPath, targetId].filter(Boolean);
 
   if (modes.length !== 1) {
@@ -77,6 +81,9 @@ async function runCommand(runArgs) {
   }
   if (applyPatch && !targetId) {
     throw new Error("--apply requires --target so PatchProof knows which source file to update.");
+  }
+  if (verifyCommand && (!applyPatch || !targetId || dryRun)) {
+    throw new Error("--verify-command requires --target with --apply and cannot be used with --dry-run.");
   }
 
   let input = scenarioId
@@ -94,6 +101,14 @@ async function runCommand(runArgs) {
 
   if (applyPatch && result.certificate.status === "certified") {
     applyResult = await applyCertificatePatch({ repoRoot, configPath, targetId, certificate: result.certificate, dryRun });
+    if (verifyCommand) {
+      applyResult.testCommand = await runRepositoryTests({
+        repoRoot,
+        configPath,
+        targetId,
+        command: testCommandOverride || undefined
+      });
+    }
   }
 
   if (outPath) {
@@ -110,7 +125,15 @@ async function runCommand(runArgs) {
     console.log(`certificate: ${outPath}`);
     if (applyResult) {
       console.log(`${applyResult.dryRun ? "patch preview" : "applied patch"}: ${applyResult.source}`);
+      if (applyResult.testCommand) {
+        console.log(`test command: ${applyResult.testCommand.command}`);
+        console.log(`test status: ${applyResult.testCommand.ok ? "passed" : "failed"} (${applyResult.testCommand.durationMs}ms)`);
+      }
     }
+  }
+
+  if (applyResult?.testCommand && !applyResult.testCommand.ok) {
+    process.exitCode = 5;
   }
 
   if (result.certificate.status !== "certified") {
@@ -247,14 +270,15 @@ async function productionDoctorCommand(doctorArgs) {
       : "Set PATCHPROOF_STORE_DRIVER=postgres and DATABASE_URL."
   );
 
-  const queueDriver = process.env.PATCHPROOF_QUEUE_DRIVER || (process.env.REDIS_URL ? "redis" : "");
+  const redisUrl = process.env.REDIS_URL || process.env.PATCHPROOF_REDIS_URL || "";
+  const queueDriver = process.env.PATCHPROOF_QUEUE_DRIVER || (redisUrl ? "redis" : "");
   addProductionCheck(
     checks,
     "Queue driver",
-    queueDriver === "redis" && process.env.REDIS_URL ? "ok" : "error",
-    queueDriver === "redis" && process.env.REDIS_URL
+    queueDriver === "redis" && redisUrl ? "ok" : "error",
+    queueDriver === "redis" && redisUrl
       ? "redis configured"
-      : "Set PATCHPROOF_QUEUE_DRIVER=redis and REDIS_URL."
+      : "Set PATCHPROOF_QUEUE_DRIVER=redis and REDIS_URL or PATCHPROOF_REDIS_URL."
   );
 
   const artifactDriver = process.env.PATCHPROOF_ARTIFACT_DRIVER || (process.env.PATCHPROOF_S3_BUCKET ? "s3" : "");
@@ -313,6 +337,37 @@ async function targetsCommand(targetArgs) {
   for (const target of targets) {
     console.log(`${target.id}\t${target.language}\t${target.source}\t${target.tests}`);
   }
+}
+
+async function testCommand(testArgs) {
+  const repoRoot = readOption(testArgs, "--repo");
+  const configPath = readOption(testArgs, "--config");
+  const targetId = readOption(testArgs, "--target");
+  const command = readOption(testArgs, "--command");
+  const timeoutSeconds = readOption(testArgs, "--timeout-seconds");
+  const jsonMode = testArgs.includes("--json");
+  const result = await runRepositoryTests({
+    repoRoot,
+    configPath,
+    targetId,
+    command,
+    timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined
+  });
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`repository test command: ${result.command}`);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.log(`test ${result.ok ? "passed" : "failed"} in ${result.durationMs}ms`);
+    if (result.error) console.log(`error: ${result.error}`);
+  }
+  if (!result.ok) process.exitCode = 5;
+}
+
+async function runRepositoryTests(options) {
+  const { runRepositoryTestCommand } = await import("../repository-adapter.js");
+  return runRepositoryTestCommand(options);
 }
 
 async function inspectCommand(inspectArgs) {
@@ -505,11 +560,11 @@ async function appendServiceHealthChecks(checks) {
     }
   }
 
-  if (process.env.REDIS_URL || process.env.PATCHPROOF_QUEUE_DRIVER === "redis") {
+  if (process.env.REDIS_URL || process.env.PATCHPROOF_REDIS_URL || process.env.PATCHPROOF_QUEUE_DRIVER === "redis") {
     let queue;
     try {
       const { createJobQueue } = await import("../saas/queue.js");
-      queue = createJobQueue({ driver: "redis" });
+      queue = createJobQueue({ driver: "redis", url: process.env.REDIS_URL || process.env.PATCHPROOF_REDIS_URL });
       const health = await queue.health();
       addProductionCheck(checks, "Redis health", health.ok ? "ok" : "error", `depth=${health.depth}, inFlight=${health.inFlight}, dead=${health.dead}`);
     } catch (error) {
@@ -680,9 +735,10 @@ Usage:
   patchproof doctor --production [--skip-service-health] [--json]
   patchproof inspect [--repo .] [--config patchproof.yml] [--json]
   patchproof targets [--repo .] [--config patchproof.yml] [--json]
+  patchproof test [--repo .] [--config patchproof.yml] [--target <id>] [--command "npm test"] [--timeout-seconds 600] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]
   patchproof run --input input.json [--out certificate.json] [--json]
-  patchproof run --target <id> [--repo .] [--config patchproof.yml] [--out certificate.json] [--apply] [--json]
+  patchproof run --target <id> [--repo .] [--config patchproof.yml] [--out certificate.json] [--apply] [--verify-command] [--json]
   patchproof apply --certificate certificate.json --repo . --target <id> [--dry-run] [--json]
   patchproof verify <certificate.json> [--json]
   patchproof version

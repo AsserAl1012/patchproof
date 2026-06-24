@@ -108,8 +108,10 @@ Avoid claiming:
 - Browser app loads at `http://127.0.0.1:4173`.
 - Certificate replay works from CLI.
 - `action.yml` can verify a certificate in GitHub Actions with a version tag.
-- `POST /api/run` works through the isolated hosted runner.
+- Local/demo `POST /api/run` works through the isolated hosted runner and is disabled by default when `NODE_ENV=production`.
 - Project runs queue and complete through the runner path.
+- Account invitation, password reset, and session-revocation APIs work.
+- `patchproof test` and `run --apply --verify-command` run the configured repository test command after a certified patch is applied.
 - Compose includes Postgres, Redis, MinIO, API, and runner services.
 - `/readyz` reports backing service readiness.
 - GitHub webhook signatures are verified.
@@ -121,7 +123,7 @@ Avoid claiming:
 - `patchproof keygen` emits usable production secret/signing values.
 - `patchproof doctor --production` passes on the target self-hosted environment.
 - `patchproof reconcile --stale-minutes 30 --apply` is documented for stale job cleanup.
-- `/api/v1/openapi.json` is reachable and describes the stable v1 API.
+- `/api/v1/openapi.json` is reachable and describes the stable v1 API, including account-operation schemas.
 - Queued/running runs can be cancelled through the dashboard or `POST /api/v1/runs/:id/cancel`.
 
 ## Roadmap After Release

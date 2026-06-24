@@ -18,6 +18,7 @@ process.env.PATCHPROOF_STORE_DRIVER = "postgres";
 process.env.DATABASE_URL = databaseUrl;
 process.env.PATCHPROOF_QUEUE_DRIVER = "redis";
 process.env.REDIS_URL = redisUrl;
+process.env.PATCHPROOF_REDIS_URL = redisUrl;
 process.env.PATCHPROOF_ARTIFACT_DRIVER = "s3";
 process.env.PATCHPROOF_S3_ENDPOINT = s3Endpoint;
 process.env.PATCHPROOF_S3_BUCKET = bucket;

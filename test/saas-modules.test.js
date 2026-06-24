@@ -12,10 +12,11 @@ import {
 import { buildRunnerPolicy } from "../saas/runner-policy.js";
 import { parsePatchProofCommand, verifyGitHubSignature } from "../saas/github.js";
 import { LocalArtifactStore } from "../saas/artifacts.js";
-import { MemoryJobQueue } from "../saas/queue.js";
+import { createJobQueue, MemoryJobQueue, resolveRedisUrl } from "../saas/queue.js";
 import { JsonSaasStore } from "../saas/store.js";
 import { runRetention } from "../saas/retention.js";
-import { buildCompletionComment, buildQueuedComment } from "../saas/github-app.js";
+import { buildCompletionComment, buildQueuedComment, createPatchPullRequest, isRepositoryAllowed } from "../saas/github-app.js";
+import { resolveQueuedRunInput } from "../saas/run-input.js";
 import {
   assertProductionSecretConfiguration,
   decryptSettingsSecrets,
@@ -43,14 +44,22 @@ version: 1
 project:
   language: python
   testCommand: py -m pytest
+  allowedPaths:
+    - src/**
+    - tests/**
 runner:
   timeoutSeconds: 300
   network: disabled
+github:
+  allowedRepositories:
+    - acme/*
 repair:
   minEvidenceScore: 0.8
 `);
   assert.equal(config.project.language, "python");
   assert.equal(config.runner.timeoutSeconds, 300);
+  assert.deepEqual(config.project.allowedPaths, ["src/**", "tests/**"]);
+  assert.deepEqual(config.github.allowedRepositories, ["acme/*"]);
   assert.equal(config.repair.minEvidenceScore, 0.8);
 });
 
@@ -115,6 +124,48 @@ test("model provider generates structured repair candidates", async () => {
   assert.equal(generated.usage.returnedCandidates, 1);
   assert.ok(generated.usage.estimatedPromptTokens > 0);
   assert.match(buildRepairPrompt({ source: "function x() {}" }), /complete replacement/);
+});
+
+test("OpenAI Responses provider uses structured output schema", async () => {
+  let request;
+  const generated = await generateModelCandidates({
+    settings: {
+      provider: "openai",
+      apiKey: "secret",
+      model: "gpt-4.1-mini",
+      maxCandidates: 2
+    },
+    input: {
+      language: "python",
+      source: "def increment(value):\n    return value",
+      tests: [{ args: [1], expect: 2 }],
+      bugReport: "increment should add one"
+    },
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body), headers: options.headers };
+      return new Response(
+        JSON.stringify({
+          output_text: JSON.stringify({
+            candidates: [
+              {
+                title: "Add one",
+                rationale: "Return the next integer.",
+                source: "def increment(value):\n    return value + 1"
+              }
+            ]
+          })
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  });
+
+  assert.equal(request.url, "https://api.openai.com/v1/responses");
+  assert.equal(request.headers.Authorization, "Bearer secret");
+  assert.equal(request.body.text.format.type, "json_schema");
+  assert.equal(request.body.max_output_tokens, 4096);
+  assert.equal(generated.provider, "openai");
+  assert.equal(generated.candidates[0].source, "def increment(value):\n    return value + 1");
 });
 
 test("model provider reports usage estimates and enforces prompt budget", async () => {
@@ -301,6 +352,43 @@ test("memory queue enqueues and claims jobs", async () => {
   assert.equal(await queue.inFlightDepth(), 0);
 });
 
+test("queue accepts REDIS_URL and PATCHPROOF_REDIS_URL aliases", () => {
+  const previousRedisUrl = process.env.REDIS_URL;
+  const previousPatchproofRedisUrl = process.env.PATCHPROOF_REDIS_URL;
+  const previousDriver = process.env.PATCHPROOF_QUEUE_DRIVER;
+  try {
+    delete process.env.REDIS_URL;
+    process.env.PATCHPROOF_REDIS_URL = "redis://example.invalid:6379";
+    delete process.env.PATCHPROOF_QUEUE_DRIVER;
+    assert.equal(resolveRedisUrl(), "redis://example.invalid:6379");
+    assert.equal(createJobQueue().driver, "redis");
+  } finally {
+    if (previousRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = previousRedisUrl;
+    if (previousPatchproofRedisUrl === undefined) delete process.env.PATCHPROOF_REDIS_URL;
+    else process.env.PATCHPROOF_REDIS_URL = previousPatchproofRedisUrl;
+    if (previousDriver === undefined) delete process.env.PATCHPROOF_QUEUE_DRIVER;
+    else process.env.PATCHPROOF_QUEUE_DRIVER = previousDriver;
+  }
+});
+
+test("queued run input resolver rejects missing input instead of falling back to examples", () => {
+  assert.throws(
+    () => resolveQueuedRunInput({ project: { config: {} }, input: undefined }),
+    /Run input is missing/
+  );
+  const fromConfig = resolveQueuedRunInput({
+    project: {
+      config: {
+        project: { language: "python" },
+        repairInput: { source: "def x():\n    return 1", tests: [] }
+      }
+    }
+  });
+  assert.equal(fromConfig.language, "python");
+  assert.match(fromConfig.source, /^def x/);
+});
+
 test("memory queue recovers expired leases and dead-letters exhausted jobs", async () => {
   const queue = new MemoryJobQueue({ leaseMs: 1, maxAttempts: 2 });
   await queue.enqueue({ jobId: "job_lease", runId: "run_lease" });
@@ -403,6 +491,90 @@ test("GitHub comment builders include run evidence", () => {
   });
   assert.match(completed, /certified/);
   assert.match(completed, /91%/);
+});
+
+test("GitHub patch PR can apply reviewed file contents", async () => {
+  const writes = [];
+  const octokit = {
+    git: {
+      getRef: async () => ({ data: { object: { sha: "base-sha" } } }),
+      createRef: async () => ({})
+    },
+    repos: {
+      getContent: async () => {
+        const error = new Error("not found");
+        error.status = 404;
+        throw error;
+      },
+      createOrUpdateFileContents: async (payload) => {
+        writes.push(payload);
+        return { data: { content: { sha: "new-sha" } } };
+      }
+    },
+    pulls: {
+      create: async () => ({ data: { number: 12, html_url: "https://github.example/acme/demo/pull/12" } })
+    }
+  };
+  const result = await createPatchPullRequest({
+    settings: { github: { applyPatchEnabled: true, allowedRepositories: ["acme/demo"] } },
+    installationId: "1",
+    owner: "acme",
+    repo: "demo",
+    run: { id: "run_1", status: "certified", evidenceScore: 0.9 },
+    certificate: { selectedPatch: { id: "candidate_1", evidenceScore: 0.9 } },
+    files: [{ path: "src/clamp.js", content: "export function clamp() { return 1; }\n" }],
+    octokit
+  });
+  assert.equal(result.created, true);
+  assert.deepEqual(result.files, ["src/clamp.js"]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "src/clamp.js");
+  assert.doesNotMatch(writes[0].path, /patchproof-patches/);
+});
+
+test("GitHub patch PR enforces repository and file path policies before writes", async () => {
+  const octokit = {
+    git: {
+      getRef: async () => {
+        throw new Error("should not reach GitHub writes for blocked repositories");
+      },
+      createRef: async () => ({})
+    },
+    repos: {
+      getContent: async () => ({}),
+      createOrUpdateFileContents: async () => ({})
+    },
+    pulls: { create: async () => ({}) }
+  };
+
+  assert.equal(isRepositoryAllowed(["acme/*"], "acme/demo"), true);
+  assert.equal(isRepositoryAllowed(["acme/*"], "evil/demo"), false);
+  assert.equal(isRepositoryAllowed([], "acme/demo", { allowEmpty: false }), false);
+
+  const blockedRepo = await createPatchPullRequest({
+    settings: { github: { applyPatchEnabled: true, allowedRepositories: ["acme/allowed"] } },
+    owner: "acme",
+    repo: "blocked",
+    run: { id: "run_1" },
+    certificate: { selectedPatch: { diff: "diff" } },
+    octokit
+  });
+  assert.equal(blockedRepo.created, false);
+  assert.equal(blockedRepo.reason, "repository-not-allowed");
+
+  await assert.rejects(
+    () => createPatchPullRequest({
+      settings: { github: { applyPatchEnabled: true, allowedRepositories: ["acme/demo"] } },
+      owner: "acme",
+      repo: "demo",
+      run: { id: "run_1" },
+      certificate: { selectedPatch: { diff: "diff" } },
+      files: [{ path: "secrets/key.txt", content: "nope" }],
+      allowedFilePaths: ["src/**"],
+      octokit
+    }),
+    /not allowed by the configured path policy/
+  );
 });
 
 test("settings secrets encrypt and mask", () => {

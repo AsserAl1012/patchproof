@@ -74,10 +74,11 @@ test("JSON sessions store token hashes instead of bearer tokens", async () => {
   try {
     const { token } = await bootstrap(baseUrl);
     await store.load();
-    assert.equal(store.state.sessions.length, 1);
-    assert.equal(store.state.sessions[0].token, undefined);
-    assert.equal(store.state.sessions[0].tokenHash.length, 64);
-    assert.notEqual(store.state.sessions[0].tokenHash, token);
+    assert.ok(store.state.sessions.length >= 1);
+    const session = store.state.sessions.at(-1);
+    assert.equal(session.token, undefined);
+    assert.equal(session.tokenHash.length, 64);
+    assert.notEqual(session.tokenHash, token);
   } finally {
     server.close();
   }
@@ -111,6 +112,76 @@ test("browser sessions can authenticate with HttpOnly cookies", async () => {
     assert.equal(me.json.user.email, "owner@example.com");
     const logout = await request(baseUrl, "/api/auth/logout", { method: "POST", cookie: sessionCookie });
     assert.match(logout.response.headers.get("set-cookie"), /Max-Age=0/);
+  } finally {
+    server.close();
+  }
+});
+
+test("SaaS account operations support invitations, password reset, and session revocation", async () => {
+  const { server, baseUrl } = await startSaasServer();
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const invitation = await request(baseUrl, "/api/admin/invitations", {
+      method: "POST",
+      token,
+      orgId,
+      body: { email: "dev@example.com", name: "Dev User", role: "developer" }
+    });
+    assert.equal(invitation.response.status, 201);
+    assert.match(invitation.json.token, /^ppi_/);
+    assert.equal(invitation.json.invitation.email, "dev@example.com");
+
+    const accepted = await request(baseUrl, "/api/invitations/accept", {
+      method: "POST",
+      body: {
+        token: invitation.json.token,
+        password: "correct horse battery staple",
+        returnToken: true
+      }
+    });
+    assert.equal(accepted.response.status, 200);
+    assert.equal(accepted.json.user.email, "dev@example.com");
+    assert.equal(accepted.json.orgs[0].role, "developer");
+
+    const sessions = await request(baseUrl, "/api/admin/sessions", { token, orgId });
+    assert.equal(sessions.response.status, 200);
+    assert.ok(sessions.json.sessions.some((session) => session.user.email === "dev@example.com"));
+
+    const reset = await request(baseUrl, "/api/admin/password-resets", {
+      method: "POST",
+      token,
+      orgId,
+      body: { email: "dev@example.com" }
+    });
+    assert.equal(reset.response.status, 201);
+    assert.match(reset.json.token, /^ppr_/);
+
+    const completed = await request(baseUrl, "/api/auth/password-reset/complete", {
+      method: "POST",
+      body: { token: reset.json.token, password: "new correct horse battery staple" }
+    });
+    assert.equal(completed.response.status, 200);
+
+    const oldSessionMe = await request(baseUrl, "/api/me", { token: accepted.json.token, orgId });
+    assert.equal(oldSessionMe.response.status, 401);
+
+    const login = await request(baseUrl, "/api/auth/login", {
+      method: "POST",
+      body: { email: "dev@example.com", password: "new correct horse battery staple", returnToken: true }
+    });
+    assert.equal(login.response.status, 200);
+    const ownSessions = await request(baseUrl, "/api/sessions", { token: login.json.token, orgId });
+    assert.equal(ownSessions.response.status, 200);
+    assert.equal(ownSessions.json.sessions.length, 1);
+
+    const revoked = await request(baseUrl, `/api/sessions/${ownSessions.json.sessions[0].id}`, {
+      method: "DELETE",
+      token: login.json.token,
+      orgId
+    });
+    assert.equal(revoked.response.status, 200);
+    const afterRevoke = await request(baseUrl, "/api/me", { token: login.json.token, orgId });
+    assert.equal(afterRevoke.response.status, 401);
   } finally {
     server.close();
   }
@@ -229,6 +300,60 @@ test("SaaS API cancels queued runs", async () => {
   }
 });
 
+test("SaaS API rejects project runs without input or configured repair input", async () => {
+  const { server, baseUrl, queue } = await startSaasServer({ inlineRuns: false });
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const projectRes = await request(baseUrl, "/api/projects", {
+      method: "POST",
+      token,
+      orgId,
+      body: { name: "Missing Input Project" }
+    });
+    const runRes = await request(baseUrl, `/api/projects/${projectRes.json.project.id}/runs`, {
+      method: "POST",
+      token,
+      orgId,
+      body: { trigger: "manual" }
+    });
+    assert.equal(runRes.response.status, 400);
+    assert.match(runRes.json.error.message, /Run input is missing/);
+    assert.equal(await queue.depth(), 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("SaaS API queues project repairInput when request input is omitted", async () => {
+  const { server, baseUrl } = await startSaasServer();
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const projectRes = await request(baseUrl, "/api/projects", {
+      method: "POST",
+      token,
+      orgId,
+      body: {
+        name: "Configured Input Project",
+        config: {
+          repairInput: createInputFromExample(examples[0])
+        }
+      }
+    });
+    const runRes = await request(baseUrl, `/api/projects/${projectRes.json.project.id}/runs`, {
+      method: "POST",
+      token,
+      orgId,
+      body: { trigger: "manual" }
+    });
+    assert.equal(runRes.response.status, 202, JSON.stringify(runRes.json));
+    assert.match(runRes.json.run.input.source, /function clamp/);
+    const finished = await waitForRun(baseUrl, runRes.json.run.id, { token, orgId });
+    assert.equal(finished.json.run.status, "certified");
+  } finally {
+    server.close();
+  }
+});
+
 test("SaaS runner uses configured model provider candidates", async () => {
   const modelServer = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -306,6 +431,46 @@ test("SaaS runner uses configured model provider candidates", async () => {
   }
 });
 
+test("SaaS runner falls back to local templates when model generation fails", async () => {
+  const { server, baseUrl } = await startSaasServer();
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const settings = await request(baseUrl, "/api/admin/settings", {
+      method: "PATCH",
+      token,
+      orgId,
+      body: {
+        modelProvider: {
+          provider: "openai-compatible",
+          baseUrl: "https://models.invalid/v1",
+          model: "repair-model",
+          maxCandidates: 2
+        }
+      }
+    });
+    assert.equal(settings.response.status, 200);
+
+    const projectRes = await request(baseUrl, "/api/projects", {
+      method: "POST",
+      token,
+      orgId,
+      body: { name: "Fallback Project" }
+    });
+    const runRes = await request(baseUrl, `/api/projects/${projectRes.json.project.id}/runs`, {
+      method: "POST",
+      token,
+      orgId,
+      body: { input: createInputFromExample(examples[0]) }
+    });
+    assert.equal(runRes.response.status, 202);
+    const finished = await waitForRun(baseUrl, runRes.json.run.id, { token, orgId });
+    assert.equal(finished.json.run.status, "certified");
+    assert.match((finished.json.job.logs || []).join("\n"), /model generation failed/);
+  } finally {
+    server.close();
+  }
+});
+
 test("SaaS admin endpoints expose settings, runners, readiness, and metrics", async () => {
   const { server, baseUrl } = await startSaasServer();
   try {
@@ -336,11 +501,17 @@ test("SaaS admin endpoints expose settings, runners, readiness, and metrics", as
     const spec = await openapi.json();
     assert.equal(spec.openapi, "3.1.0");
     assert.ok(spec.paths["/runs/{runId}/cancel"]);
+    assert.ok(spec.paths["/admin/invitations"]);
+    assert.ok(spec.paths["/auth/password-reset/complete"]);
+    assert.ok(spec.components.schemas.Run);
+    assert.ok(spec.components.schemas.CreateInvitationRequest);
 
     const metrics = await fetch(`${baseUrl}/metrics`);
     const text = await metrics.text();
     assert.equal(metrics.status, 200);
     assert.match(text, /patchproof_runs_total/);
+    assert.match(text, /patchproof_jobs_total/);
+    assert.match(text, /patchproof_job_duration_ms_avg/);
 
     const retention = await request(baseUrl, "/api/admin/retention", {
       method: "POST",

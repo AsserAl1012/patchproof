@@ -24,6 +24,10 @@ const DEFAULT_CONFIG = Object.freeze({
     apiKeyEnv: "PATCHPROOF_MODEL_API_KEY",
     model: "configurable-by-admin"
   },
+  github: {
+    allowedRepositories: [],
+    allowedFilePaths: []
+  },
   targets: {}
 });
 
@@ -51,6 +55,14 @@ export function validatePatchproofConfig(config) {
   if (!config.targets || typeof config.targets !== "object" || Array.isArray(config.targets)) {
     throw new Error("targets must be an object keyed by target id.");
   }
+  if (config.github) {
+    if (config.github.allowedRepositories !== undefined && !isStringArray(config.github.allowedRepositories)) {
+      throw new Error("github.allowedRepositories must be a list of repository patterns.");
+    }
+    if (config.github.allowedFilePaths !== undefined && !isStringArray(config.github.allowedFilePaths)) {
+      throw new Error("github.allowedFilePaths must be a list of repository-relative path patterns.");
+    }
+  }
   for (const [id, target] of Object.entries(config.targets)) {
     if (!/^[A-Za-z0-9_.-]+$/.test(id)) throw new Error(`Invalid target id '${id}'.`);
     if (!target || typeof target !== "object" || Array.isArray(target)) {
@@ -63,49 +75,51 @@ export function validatePatchproofConfig(config) {
   return config;
 }
 
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim());
+}
+
 function parseSimpleYaml(text) {
   const root = {};
   const stack = [{ indent: -1, value: root }];
-  let pendingList = null;
-  for (const raw of String(text).split(/\r?\n/)) {
+  const lines = String(text).split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index];
     if (!raw.trim() || raw.trim().startsWith("#")) continue;
     const indent = raw.match(/^\s*/)[0].length;
     const line = raw.trim();
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
     const current = stack[stack.length - 1].value;
     if (line.startsWith("- ")) {
-      if (!pendingList) throw new Error("Invalid list item in patchproof.yml.");
-      pendingList.push(parseScalar(line.slice(2)));
+      if (!Array.isArray(current)) throw new Error("Invalid list item in patchproof.yml.");
+      current.push(parseScalar(line.slice(2)));
       continue;
     }
     const [key, ...rest] = line.split(":");
     const valueText = rest.join(":").trim();
     if (!key) throw new Error("Invalid key in patchproof.yml.");
     if (valueText === "") {
-      const child = {};
+      const child = nextMeaningfulLineIsList(lines, index, indent) ? [] : {};
       current[key] = child;
       stack.push({ indent, value: child });
-      pendingList = null;
     } else if (valueText === "[]") {
       current[key] = [];
-      pendingList = current[key];
     } else {
       current[key] = parseScalar(valueText);
-      pendingList = null;
-    }
-    if (valueText === "") {
-      const nextRaw = String(text).split(/\r?\n/).find((candidate) => candidate.trim().startsWith("- "));
-      if (nextRaw) {
-        // Lists are also accepted by setting "key:" then list items; convert lazily when first item arrives.
-      }
-    }
-    if (valueText === "" && ["allowedPaths", "forbiddenPaths"].includes(key)) {
-      current[key] = [];
-      stack.pop();
-      pendingList = current[key];
     }
   }
   return root;
+}
+
+function nextMeaningfulLineIsList(lines, fromIndex, parentIndent) {
+  for (let index = fromIndex + 1; index < lines.length; index += 1) {
+    const raw = lines[index];
+    if (!raw.trim() || raw.trim().startsWith("#")) continue;
+    const indent = raw.match(/^\s*/)[0].length;
+    if (indent <= parentIndent) return false;
+    return raw.trim().startsWith("- ");
+  }
+  return false;
 }
 
 function parseScalar(value) {
@@ -113,7 +127,38 @@ function parseScalar(value) {
   if (text === "true") return true;
   if (text === "false") return false;
   if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  if (text.startsWith("[") && text.endsWith("]")) {
+    const body = text.slice(1, -1).trim();
+    return body ? splitInlineArray(body).map(parseScalar) : [];
+  }
   return text.replace(/^["']|["']$/g, "");
+}
+
+function splitInlineArray(text) {
+  const values = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  for (const char of String(text || "")) {
+    if (quote) {
+      current += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      current += char;
+    } else if (char === ",") {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) values.push(current.trim());
+  return values;
 }
 
 function deepMerge(base, patch) {

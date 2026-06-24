@@ -9,7 +9,7 @@ Determine whether PatchProof can safely process untrusted user-submitted JavaScr
 ## Current Trust Boundaries
 
 - Browser-side verification is disabled.
-- API quick runs use isolated child processes and are intended for local/demo use.
+- API quick runs use isolated child processes, are intended for local/demo use, and are disabled by default when `NODE_ENV=production` unless explicitly enabled.
 - Production project runs are queued and processed by runner workers.
 - Docker runner jobs use one container per job, no network by default, read-only filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, `no-new-privileges`, dropped capabilities, and optional hardened Docker runtime selection through `PATCHPROOF_DOCKER_RUNTIME`.
 - Stronger runtimes such as gVisor `runsc` or Kata can be selected when installed on runner hosts.

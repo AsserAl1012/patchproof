@@ -50,8 +50,16 @@ const elements = {
   loadRunnersButton: document.querySelector("#loadRunnersButton"),
   loadApiKeysButton: document.querySelector("#loadApiKeysButton"),
   createApiKeyButton: document.querySelector("#createApiKeyButton"),
+  loadInvitationsButton: document.querySelector("#loadInvitationsButton"),
+  createInvitationButton: document.querySelector("#createInvitationButton"),
+  createPasswordResetButton: document.querySelector("#createPasswordResetButton"),
+  loadSessionsButton: document.querySelector("#loadSessionsButton"),
+  revokeSessionButton: document.querySelector("#revokeSessionButton"),
   loadAuditButton: document.querySelector("#loadAuditButton"),
   cancelRunButton: document.querySelector("#cancelRunButton"),
+  opsEmailInput: document.querySelector("#opsEmailInput"),
+  opsRoleInput: document.querySelector("#opsRoleInput"),
+  opsSessionInput: document.querySelector("#opsSessionInput"),
   runnerLabel: document.querySelector("#runnerLabel"),
   opsOutput: document.querySelector("#opsOutput")
 };
@@ -130,6 +138,11 @@ function bindEvents() {
   elements.loadRunnersButton.addEventListener("click", loadRunners);
   elements.loadApiKeysButton.addEventListener("click", loadApiKeys);
   elements.createApiKeyButton.addEventListener("click", createApiKey);
+  elements.loadInvitationsButton.addEventListener("click", loadInvitations);
+  elements.createInvitationButton.addEventListener("click", createInvitation);
+  elements.createPasswordResetButton.addEventListener("click", createPasswordReset);
+  elements.loadSessionsButton.addEventListener("click", loadSessions);
+  elements.revokeSessionButton.addEventListener("click", revokeSession);
   elements.loadAuditButton.addEventListener("click", loadAudit);
   elements.cancelRunButton.addEventListener("click", cancelSelectedRun);
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -675,6 +688,84 @@ async function createApiKey() {
       null,
       2
     );
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
+  }
+}
+
+async function loadInvitations() {
+  try {
+    const response = await api("/api/admin/invitations");
+    elements.opsOutput.textContent = JSON.stringify(response.invitations, null, 2);
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
+  }
+}
+
+async function createInvitation() {
+  try {
+    const email = elements.opsEmailInput.value.trim();
+    if (!email) throw new Error("Enter an email in the operations email field.");
+    const response = await api("/api/admin/invitations", {
+      method: "POST",
+      body: {
+        email,
+        role: elements.opsRoleInput.value.trim() || "developer"
+      }
+    });
+    elements.opsOutput.textContent = JSON.stringify(
+      {
+        message: "Deliver this invitation token out of band; it is shown once.",
+        token: response.token,
+        invitation: response.invitation
+      },
+      null,
+      2
+    );
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
+  }
+}
+
+async function createPasswordReset() {
+  try {
+    const email = elements.opsEmailInput.value.trim();
+    if (!email) throw new Error("Enter an email in the operations email field.");
+    const response = await api("/api/admin/password-resets", {
+      method: "POST",
+      body: { email }
+    });
+    elements.opsOutput.textContent = JSON.stringify(
+      {
+        message: "Deliver this password reset token out of band; it is shown once.",
+        token: response.token,
+        passwordReset: response.passwordReset
+      },
+      null,
+      2
+    );
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
+  }
+}
+
+async function loadSessions() {
+  try {
+    const response = await api("/api/admin/sessions");
+    elements.opsOutput.textContent = JSON.stringify(response.sessions, null, 2);
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
+  }
+}
+
+async function revokeSession() {
+  try {
+    const sessionId = elements.opsSessionInput.value.trim();
+    if (!sessionId) throw new Error("Enter a session id in the operations session field.");
+    const response = await api(`/api/admin/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE"
+    });
+    elements.opsOutput.textContent = JSON.stringify(response.session, null, 2);
   } catch (error) {
     elements.opsOutput.textContent = error.message;
   }

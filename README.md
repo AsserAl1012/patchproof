@@ -47,7 +47,8 @@ node bin/patchproof.js run --scenario clamp-range --out certificate.json
 node bin/patchproof.js run --input examples/clamp-range.input.json --out certificate.json
 node bin/patchproof.js inspect --repo path/to/project
 node bin/patchproof.js targets --repo path/to/project
-node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
+node bin/patchproof.js test --repo path/to/project
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply --verify-command
 node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
@@ -69,7 +70,8 @@ npx patchproof run --scenario clamp-range --out certificate.json
 npx patchproof run --input examples/clamp-range.input.json --out certificate.json
 npx patchproof inspect --repo path/to/project
 npx patchproof targets --repo path/to/project
-npx patchproof run --repo path/to/project --target clamp-range --out certificate.json --apply
+npx patchproof test --repo path/to/project
+npx patchproof run --repo path/to/project --target clamp-range --out certificate.json --apply --verify-command
 npx patchproof apply --certificate certificate.json --repo path/to/project --target clamp-range
 npx patchproof verify certificate.json
 npx patchproof serve
@@ -84,10 +86,10 @@ npx patchproof inspect --repo .
 npx patchproof init --repo .
 npx patchproof doctor --repo .
 npx patchproof run --repo . --target <target-id> --out patchproof-certificate.json
-npx patchproof run --repo . --target <target-id> --out patchproof-certificate.json --apply
+npx patchproof run --repo . --target <target-id> --out patchproof-certificate.json --apply --verify-command
 ```
 
-`init` creates a starter `patchproof.yml` from checkout metadata. `doctor` validates local setup, configured targets, Python availability when needed, and detected test adapters. `run --apply` writes the certified replacement function back into the target source file only when the certificate is accepted and the source still matches the replay input.
+`init` creates a starter `patchproof.yml` from checkout metadata. `doctor` validates local setup, configured targets, Python availability when needed, and detected test adapters. `run --apply` writes the certified replacement function back into the target source file only when the certificate is accepted and the source still matches the replay input. `--verify-command` then runs the repository's configured `project.testCommand`; `patchproof test --repo .` can run that command directly.
 
 ## Private SaaS Flow
 
@@ -133,7 +135,7 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the full manual, [docs/SECURITY
 
 ## Production Private SaaS
 
-The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `PATCHPROOF_DOCKER_RUNTIME=runsc` or `kata` can select a hardened Docker runtime on runner hosts that support it. `patchproof retention` enforces configured retention windows. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
+The browser app uses authenticated SaaS APIs with same-origin HttpOnly session cookies for project runs and keeps `POST /api/run` as a local/demo quick-run endpoint. That quick-run endpoint is disabled by default in production unless `PATCHPROOF_ENABLE_QUICK_RUN=true` is set explicitly. Production project runs are queued with leases, acknowledgements, retries, and dead-letter tracking, executed by `patchproof runner`, and stored as hash-checked artifacts. `PATCHPROOF_DOCKER_RUNTIME=runsc` or `kata` can select a hardened Docker runtime on runner hosts that support it. Admin APIs support invitations, password reset tokens, and browser-session revocation. `patchproof retention` enforces configured retention windows. `docker compose up --build` starts Postgres, Redis, MinIO, the API, and the runner.
 
 Before deploying a self-hosted v1 instance, run `patchproof keygen` to generate the encryption/signing environment values, then run `patchproof doctor --production` from the configured host to validate Docker, runner image, Postgres, Redis, S3/MinIO, signing keys, and release metadata. Operators can cancel queued/running jobs from the dashboard or API, and `patchproof reconcile --stale-minutes 30 --apply` marks stale running jobs failed after runner crashes. The stable HTTP API is available under `/api/v1`, with OpenAPI metadata at `/api/v1/openapi.json`.
 

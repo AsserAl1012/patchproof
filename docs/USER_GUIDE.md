@@ -54,7 +54,8 @@ node bin/patchproof.js doctor --repo path/to/project
 node bin/patchproof.js run --scenario clamp-range --out certificate.json
 node bin/patchproof.js inspect --repo path/to/project
 node bin/patchproof.js targets --repo path/to/project
-node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
+node bin/patchproof.js test --repo path/to/project
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply --verify-command
 node bin/patchproof.js apply --certificate certificate.json --repo path/to/project --target clamp-range
 node bin/patchproof.js verify certificate.json
 node bin/patchproof.js serve --port 4173
@@ -262,6 +263,7 @@ Create `patchproof.yml` in the repository you want to test:
 version: 1
 project:
   language: javascript
+  testCommand: npm test
   allowedPaths:
     - src/**
     - tests/**
@@ -306,6 +308,21 @@ Apply an accepted certified patch back to the source file:
 ```powershell
 node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply
 ```
+
+Apply and then run the repository's configured project test command:
+
+```powershell
+node bin/patchproof.js run --repo path/to/project --target clamp-range --out certificate.json --apply --verify-command
+```
+
+Run the configured project test command directly:
+
+```powershell
+node bin/patchproof.js test --repo path/to/project
+node bin/patchproof.js test --repo path/to/project --command "npm test"
+```
+
+`patchproof test` runs `project.testCommand`, a target-level `testCommand`, or an explicit `--command` from the repository root with `CI=true`. It is intended to validate the real project test suite after PatchProof applies a certified function-level patch.
 
 Or apply a saved certificate:
 
@@ -412,7 +429,7 @@ PatchProof blocks obvious dangerous tokens such as `fetch`, `eval`, `Function`, 
 ## Current Limitations
 
 - No multi-file project repair yet; repository targets still extract one configured function-level target.
-- Framework adapters only extract simple literal assertions; they do not execute the full Jest, Vitest, node:test, or pytest suite.
+- Framework adapters only extract simple literal assertions into PatchProof tests. Use `patchproof test` or `run --apply --verify-command` to execute the repository's own Jest, Vitest, node:test, or pytest command after applying a certified patch.
 - Python local repair templates cover common function-level bugs such as wrong upper-bound comparisons, slice/range off-by-one errors, whitespace slugification, missing increments, and returning `list.append(...)`.
 - No symbolic solver yet; the bounded proof is finite-domain differential validation with deterministic property-style generated cases.
 - Saved certificate history is local-only; project runs are persisted by the SaaS backend.

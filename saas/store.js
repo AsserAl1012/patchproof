@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     privateKey: "",
     webhookSecret: "",
     allowedRepositories: [],
+    allowedFilePaths: [],
     applyPatchEnabled: false
   }
 });
@@ -98,6 +99,7 @@ export class JsonSaasStore {
     this.state.users.push(user);
     this.state.memberships.push({ userId: user.id, orgId: org.id, role: "owner", createdAt: now });
     this.state.settings[org.id] = structuredClone(DEFAULT_SETTINGS);
+    const { token } = this.createSessionRecord(user.id);
     this.addAuditEvent({
       orgId: org.id,
       actorUserId: user.id,
@@ -107,7 +109,7 @@ export class JsonSaasStore {
       metadata: { email: user.email }
     });
     await this.save();
-    return { user: publicUser(user), org, role: "owner" };
+    return { token, user: publicUser(user), org, role: "owner", orgs: this.orgsForUser(user.id) };
   }
 
   async login({ email, password }) {
@@ -118,15 +120,7 @@ export class JsonSaasStore {
       error.statusCode = 401;
       throw error;
     }
-    const token = randomBytes(32).toString("hex");
-    const session = {
-      id: id("ses"),
-      tokenHash: sha256(token),
-      userId: user.id,
-      createdAt: nowIso(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString()
-    };
-    this.state.sessions.push(session);
+    const { token } = this.createSessionRecord(user.id);
     const primaryMembership = this.membershipsForUser(user.id)[0];
     this.addAuditEvent({
       orgId: primaryMembership?.orgId || null,
@@ -153,6 +147,19 @@ export class JsonSaasStore {
       });
     }
     await this.save();
+  }
+
+  createSessionRecord(userId) {
+    const token = randomBytes(32).toString("hex");
+    const session = {
+      id: id("ses"),
+      tokenHash: sha256(token),
+      userId,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString()
+    };
+    this.state.sessions.push(session);
+    return { token, session };
   }
 
   async authenticate(token) {
@@ -254,6 +261,142 @@ export class JsonSaasStore {
     this.addAuditEvent({ orgId, actorUserId, action: "api_key.revoked", targetType: "api_key", targetId: key.id });
     await this.save();
     return publicApiKey(key);
+  }
+
+  async createInvitation({ orgId, actorUserId, email, role = "developer", name = "", expiresInDays = 7 }) {
+    await this.load();
+    const normalizedRole = normalizeRole(role);
+    if (!["admin", "developer", "reviewer", "auditor"].includes(normalizedRole)) {
+      throw statusError("Invitations can only use admin, developer, reviewer, or auditor roles.", 400);
+    }
+    const token = `ppi_${randomBytes(32).toString("hex")}`;
+    const invitation = {
+      id: id("inv"),
+      orgId,
+      email: normalizeEmail(email),
+      name: String(name || ""),
+      role: normalizedRole,
+      tokenHash: sha256(token),
+      createdByUserId: actorUserId,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + Math.max(1, Number(expiresInDays || 7)) * 24 * 60 * 60 * 1000).toISOString(),
+      acceptedAt: null,
+      acceptedByUserId: null,
+      revokedAt: null
+    };
+    this.state.invitations.push(invitation);
+    this.addAuditEvent({ orgId, actorUserId, action: "invitation.created", targetType: "invitation", targetId: invitation.id, metadata: { email: invitation.email, role: invitation.role } });
+    await this.save();
+    return { invitation: publicInvitation(invitation), token };
+  }
+
+  async listInvitations(orgId) {
+    await this.load();
+    return this.state.invitations
+      .filter((invitation) => invitation.orgId === orgId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(publicInvitation);
+  }
+
+  async revokeInvitation({ orgId, actorUserId, invitationId }) {
+    await this.load();
+    const invitation = this.state.invitations.find((item) => item.id === invitationId && item.orgId === orgId);
+    if (!invitation) throw notFound("Invitation");
+    invitation.revokedAt ||= nowIso();
+    this.addAuditEvent({ orgId, actorUserId, action: "invitation.revoked", targetType: "invitation", targetId: invitation.id });
+    await this.save();
+    return publicInvitation(invitation);
+  }
+
+  async acceptInvitation({ token, password, name = "" }) {
+    await this.load();
+    const invitation = activeTokenRecord(this.state.invitations, token, "Invitation");
+    const now = nowIso();
+    let user = this.state.users.find((item) => item.email === invitation.email);
+    if (!user) {
+      user = {
+        id: id("usr"),
+        email: invitation.email,
+        name: String(name || invitation.name || invitation.email.split("@")[0]),
+        passwordHash: hashPassword(password),
+        createdAt: now
+      };
+      this.state.users.push(user);
+    } else if (name && !user.name) {
+      user.name = String(name);
+    }
+    const existingMembership = this.state.memberships.find((item) => item.userId === user.id && item.orgId === invitation.orgId);
+    if (existingMembership) {
+      existingMembership.role = invitation.role;
+    } else {
+      this.state.memberships.push({ userId: user.id, orgId: invitation.orgId, role: invitation.role, createdAt: now });
+    }
+    invitation.acceptedAt = now;
+    invitation.acceptedByUserId = user.id;
+    const { token: sessionToken } = this.createSessionRecord(user.id);
+    this.addAuditEvent({ orgId: invitation.orgId, actorUserId: user.id, action: "invitation.accepted", targetType: "invitation", targetId: invitation.id });
+    await this.save();
+    return { token: sessionToken, user: publicUser(user), orgs: this.orgsForUser(user.id), invitation: publicInvitation(invitation) };
+  }
+
+  async createPasswordReset({ orgId, actorUserId, email, userId, expiresInMinutes = 60 }) {
+    await this.load();
+    const user = userId
+      ? this.state.users.find((item) => item.id === userId)
+      : this.state.users.find((item) => item.email === normalizeEmail(email));
+    if (!user) throw notFound("User");
+    if (!this.state.memberships.some((membership) => membership.userId === user.id && membership.orgId === orgId)) {
+      throw notFound("User");
+    }
+    const token = `ppr_${randomBytes(32).toString("hex")}`;
+    const reset = {
+      id: id("rst"),
+      orgId,
+      userId: user.id,
+      tokenHash: sha256(token),
+      createdByUserId: actorUserId,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + Math.max(5, Number(expiresInMinutes || 60)) * 60 * 1000).toISOString(),
+      usedAt: null
+    };
+    this.state.passwordResets.push(reset);
+    this.addAuditEvent({ orgId, actorUserId, action: "password_reset.created", targetType: "user", targetId: user.id });
+    await this.save();
+    return { passwordReset: publicPasswordReset(reset), token };
+  }
+
+  async resetPassword({ token, password }) {
+    await this.load();
+    const reset = activeTokenRecord(this.state.passwordResets, token, "Password reset");
+    const user = this.state.users.find((item) => item.id === reset.userId);
+    if (!user) throw notFound("User");
+    user.passwordHash = hashPassword(password);
+    reset.usedAt = nowIso();
+    this.state.sessions = this.state.sessions.filter((session) => session.userId !== user.id);
+    this.addAuditEvent({ orgId: reset.orgId, actorUserId: user.id, action: "password_reset.completed", targetType: "user", targetId: user.id });
+    await this.save();
+    return { user: publicUser(user) };
+  }
+
+  async listSessions({ orgId, userId = null }) {
+    await this.load();
+    const memberUserIds = new Set(this.state.memberships.filter((membership) => membership.orgId === orgId).map((membership) => membership.userId));
+    return this.state.sessions
+      .filter((session) => memberUserIds.has(session.userId) && (!userId || session.userId === userId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((session) => publicSession(session, this.state.users.find((user) => user.id === session.userId)));
+  }
+
+  async revokeSession({ orgId, actorUserId, sessionId }) {
+    await this.load();
+    const session = this.state.sessions.find((item) => item.id === sessionId);
+    if (!session || !this.state.memberships.some((membership) => membership.userId === session.userId && membership.orgId === orgId)) {
+      throw notFound("Session");
+    }
+    this.state.sessions = this.state.sessions.filter((item) => item.id !== session.id);
+    this.addAuditEvent({ orgId, actorUserId, action: "session.revoked", targetType: "session", targetId: session.id, metadata: { userId: session.userId } });
+    await this.save();
+    return publicSession(session, this.state.users.find((user) => user.id === session.userId));
   }
 
   async listProjects(orgId) {
@@ -678,13 +821,25 @@ export class JsonSaasStore {
 
   metrics() {
     const runs = this.state.runs;
+    const jobs = this.state.jobs;
+    const terminalRuns = runs.filter((run) => isTerminalRunStatus(run.status));
+    const completedJobs = jobs.filter((job) => job.completedAt);
     return {
       runsTotal: runs.length,
       runsCertified: runs.filter((run) => run.status === "certified").length,
       runsRejected: runs.filter((run) => run.status === "rejected").length,
       runsFailed: runs.filter((run) => run.status === "failed").length,
       runsCancelled: runs.filter((run) => run.status === "cancelled").length,
-      queueDepth: this.state.jobs.filter((job) => job.status === "queued").length,
+      runDurationMsAvg: averageDurationMs(terminalRuns, "createdAt", "updatedAt"),
+      queueDepth: jobs.filter((job) => job.status === "queued").length,
+      jobsQueued: jobs.filter((job) => job.status === "queued").length,
+      jobsRunning: jobs.filter((job) => job.status === "running").length,
+      jobsCompleted: jobs.filter((job) => job.status === "completed").length,
+      jobsFailed: jobs.filter((job) => job.status === "failed").length,
+      jobsCancelled: jobs.filter((job) => job.status === "cancelled").length,
+      jobDurationMsAvg: averageDurationMs(completedJobs, "startedAt", "completedAt"),
+      modelCallsTotal: jobs.filter((job) => job.resourceUsage?.modelProvider && job.resourceUsage?.modelProvider !== "disabled").length,
+      modelErrorsTotal: jobs.filter((job) => job.status === "failed" && job.resourceUsage?.modelProvider && job.resourceUsage?.modelProvider !== "disabled").length,
       runnerCount: this.state.runnerHeartbeats.filter((runner) => Date.now() - new Date(runner.lastSeenAt).getTime() < 120000).length || 1,
       auditEvents: this.state.auditEvents.length
     };
@@ -734,6 +889,8 @@ function createEmptyState() {
     orgs: [],
     memberships: [],
     sessions: [],
+    invitations: [],
+    passwordResets: [],
     projects: [],
     runs: [],
     jobs: [],
@@ -771,6 +928,44 @@ function publicApiKey(key) {
   };
 }
 
+function publicInvitation(invitation) {
+  return {
+    id: invitation.id,
+    orgId: invitation.orgId,
+    email: invitation.email,
+    name: invitation.name || "",
+    role: invitation.role,
+    createdByUserId: invitation.createdByUserId,
+    createdAt: invitation.createdAt,
+    expiresAt: invitation.expiresAt,
+    acceptedAt: invitation.acceptedAt,
+    acceptedByUserId: invitation.acceptedByUserId,
+    revokedAt: invitation.revokedAt
+  };
+}
+
+function publicPasswordReset(reset) {
+  return {
+    id: reset.id,
+    orgId: reset.orgId,
+    userId: reset.userId,
+    createdByUserId: reset.createdByUserId,
+    createdAt: reset.createdAt,
+    expiresAt: reset.expiresAt,
+    usedAt: reset.usedAt
+  };
+}
+
+function publicSession(session, user = null) {
+  return {
+    id: session.id,
+    userId: session.userId,
+    user: user ? publicUser(user) : null,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt
+  };
+}
+
 function hashPassword(password) {
   if (!password || String(password).length < 8) {
     const error = new Error("Password must be at least 8 characters.");
@@ -800,6 +995,15 @@ function normalizeEmail(email) {
   return value;
 }
 
+function activeTokenRecord(records, token, label) {
+  const tokenHash = sha256(String(token || ""));
+  const record = records.find((item) => item.tokenHash === tokenHash);
+  if (!record || record.revokedAt || record.acceptedAt || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
+    throw statusError(`${label} token is invalid or expired.`, 400);
+  }
+  return record;
+}
+
 function id(prefix) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
@@ -808,12 +1012,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function statusError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 function defaultStaleRunMs() {
   return Number(process.env.PATCHPROOF_STALE_RUN_MS || 30 * 60 * 1000);
 }
 
 function isTerminalRunStatus(status) {
   return ["certified", "rejected", "failed", "completed", "cancelled"].includes(String(status || ""));
+}
+
+function averageDurationMs(items, startKey, endKey) {
+  const durations = items
+    .map((item) => Date.parse(item[endKey] || "") - Date.parse(item[startKey] || ""))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  if (!durations.length) return 0;
+  return Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length);
 }
 
 function sha256(value) {

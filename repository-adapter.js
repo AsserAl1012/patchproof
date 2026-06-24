@@ -276,6 +276,62 @@ export async function applyCertificatePatchToRepositoryTarget(options = {}) {
   };
 }
 
+export async function runRepositoryTestCommand(options = {}) {
+  const repoRoot = resolve(options.repoRoot || process.cwd());
+  let config = null;
+  let target = null;
+  try {
+    const loaded = await loadRepositoryConfig(options);
+    config = loaded.config;
+    const targets = config.targets || {};
+    if (options.targetId || Object.keys(targets).length === 1) {
+      target = targets[selectTargetId(targets, options.targetId)];
+    }
+  } catch (error) {
+    if (!options.command) {
+      throw error;
+    }
+  }
+  const command = String(
+    options.command ||
+      target?.testCommand ||
+      config?.project?.testCommand ||
+      (await inspectRepository({ repoRoot, configPath: options.configPath || "patchproof.yml" })).testCommands[0]?.command ||
+      ""
+  ).trim();
+  assertSafeProjectCommand(command);
+  const timeoutMs = Math.max(
+    1000,
+    Number(options.timeoutMs || options.timeoutSeconds * 1000 || target?.testTimeoutSeconds * 1000 || config?.runner?.timeoutSeconds * 1000 || 600000)
+  );
+  const startedAt = Date.now();
+  const result = spawnSync(command, {
+    cwd: repoRoot,
+    shell: true,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: timeoutMs,
+    maxBuffer: Number(options.maxBuffer || 10 * 1024 * 1024),
+    env: {
+      ...process.env,
+      CI: process.env.CI || "true",
+      PATCHPROOF: "1"
+    }
+  });
+  return {
+    ok: result.status === 0 && !result.error,
+    command,
+    repoRoot,
+    status: result.status,
+    signal: result.signal,
+    durationMs: Date.now() - startedAt,
+    timedOut: result.error?.code === "ETIMEDOUT",
+    error: result.error ? result.error.message : null,
+    stdout: result.stdout || "",
+    stderr: result.stderr || ""
+  };
+}
+
 function selectTargetId(targets, requested) {
   const ids = Object.keys(targets);
   if (!ids.length) throw new Error("patchproof.yml does not define any repository targets.");
@@ -287,6 +343,16 @@ function selectTargetId(targets, requested) {
   }
   if (ids.length === 1) return ids[0];
   throw new Error(`Multiple repository targets exist. Pass --target <id>. Available targets: ${ids.join(", ")}.`);
+}
+
+function assertSafeProjectCommand(command) {
+  if (!command) throw new Error("No repository test command is configured. Set project.testCommand or pass --command.");
+  if (command.length > 1000 || /[\0\r\n]/.test(command)) {
+    throw new Error("Repository test command must be a single line under 1000 characters.");
+  }
+  if (/[;&|<>`]/.test(command) || /\$\s*\(/.test(command)) {
+    throw new Error("Repository test command must not contain shell chaining, pipes, redirects, or command substitution.");
+  }
 }
 
 function buildTargetLimits(config, target) {
