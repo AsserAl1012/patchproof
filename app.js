@@ -51,6 +51,7 @@ const elements = {
   loadApiKeysButton: document.querySelector("#loadApiKeysButton"),
   createApiKeyButton: document.querySelector("#createApiKeyButton"),
   loadAuditButton: document.querySelector("#loadAuditButton"),
+  cancelRunButton: document.querySelector("#cancelRunButton"),
   runnerLabel: document.querySelector("#runnerLabel"),
   opsOutput: document.querySelector("#opsOutput")
 };
@@ -65,6 +66,7 @@ let auth = readAuth();
 let selectedProject = null;
 let runPollTimer = null;
 let pendingProjectRunId = null;
+let selectedRunId = null;
 
 function init() {
   renderScenarios();
@@ -129,6 +131,7 @@ function bindEvents() {
   elements.loadApiKeysButton.addEventListener("click", loadApiKeys);
   elements.createApiKeyButton.addEventListener("click", createApiKey);
   elements.loadAuditButton.addEventListener("click", loadAudit);
+  elements.cancelRunButton.addEventListener("click", cancelSelectedRun);
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => activateTab(tab.dataset.tab));
   });
@@ -595,6 +598,7 @@ async function loadRuns() {
 
 async function loadRunDetail(runId) {
   try {
+    selectedRunId = runId;
     const detail = await api(`/api/runs/${runId}`);
     if (detail.certificate?.certificate) loadCertificate(detail.certificate.certificate);
     else {
@@ -710,6 +714,24 @@ function readAuth() {
     return rest.user ? rest : null;
   } catch {
     return null;
+  }
+}
+
+async function cancelSelectedRun() {
+  if (!selectedRunId) {
+    elements.opsOutput.textContent = "Select a queued or running run first.";
+    return;
+  }
+  try {
+    const result = await api(`/api/runs/${selectedRunId}/cancel`, {
+      method: "POST",
+      body: { message: "Cancelled from dashboard." }
+    });
+    elements.opsOutput.textContent = JSON.stringify({ run: result.run, job: result.job }, null, 2);
+    await loadRuns();
+    await loadRunDetail(selectedRunId);
+  } catch (error) {
+    elements.opsOutput.textContent = error.message;
   }
 }
 

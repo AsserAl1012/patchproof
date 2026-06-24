@@ -16,7 +16,8 @@ worker.js
 bin/patchproof.js
   CLI for serving the app, initializing/checking repositories, running scenarios,
   applying certified target patches, migrating Postgres, running workers, and
-  replaying certificates
+  replaying certificates. Production operations commands generate secrets,
+  validate deployed dependencies, run retention, and reconcile stale jobs.
 
 repository-adapter.js
   Inspects repository checkouts, detects package/test metadata, reads patchproof.yml
@@ -40,8 +41,9 @@ engine.js
   analysis, certificate construction
 
 server.js
-  static server, auth/org/project/run APIs, queue producer, quick-run API, rate limits,
-  security headers, request IDs, health/readiness/metrics endpoints
+  static server, auth/org/project/run APIs, versioned /api/v1 aliases, OpenAPI
+  document, queue producer, quick-run API, rate limits, security headers,
+  request IDs, health/readiness/metrics endpoints
 
 saas/retention.js
   retention planner/executor for expired sessions, artifacts, audit events, and
@@ -80,8 +82,10 @@ test/
 4. Production runner mode uses Docker with no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after each job.
 5. Certificates, logs, diffs, and runner metadata are uploaded to S3/MinIO or local artifact storage.
 6. Certificate download verifies artifact hashes before returning data.
-7. `patchproof retention` deletes expired artifact objects/metadata, sessions, audit events, and old GitHub delivery records.
-8. Runner loops handle `SIGINT`/`SIGTERM` by stopping after the current job and recording a stopping heartbeat.
+7. Queued/running jobs can be cancelled before completion; cancelled queue payloads are acknowledged rather than retried.
+8. `patchproof retention` deletes expired artifact objects/metadata, sessions, audit events, and old GitHub delivery records.
+9. `patchproof reconcile` marks stale running jobs failed after unclean runner shutdowns.
+10. Runner loops handle `SIGINT`/`SIGTERM` by stopping after the current job and recording a stopping heartbeat.
 
 ## Why The Design Is Conservative
 

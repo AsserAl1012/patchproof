@@ -21,7 +21,19 @@ This is suitable for self-hosted/private SaaS deployments when paired with the q
 
 Private SaaS mode adds authenticated organizations, projects, persistent runs, queued jobs, audit events, admin settings, GitHub integration, artifact storage, and runner health APIs. Production mode uses Postgres, Redis, and S3/MinIO. JSON storage remains available only for local/demo usage.
 
-Operational hardening now includes request IDs, optional JSON access logs, webhook delivery deduplication, graceful runner shutdown, and explicit retention cleanup for expired sessions, artifacts, audit events, and webhook delivery records.
+Operational hardening now includes request IDs, optional JSON access logs, webhook delivery deduplication, graceful runner shutdown, run cancellation, stale-run reconciliation, and explicit retention cleanup for expired sessions, artifacts, audit events, and webhook delivery records.
+
+Generate deployment secrets before first boot:
+
+```powershell
+npx patchproof keygen --issuer your-org --key-id 2026-rotation-1
+```
+
+Validate the configured host before launch:
+
+```powershell
+npx patchproof doctor --production
+```
 
 ## Local Container Run
 
@@ -102,6 +114,14 @@ Run retention cleanup:
 npm run retention -- --dry-run
 npm run retention
 ```
+
+Reconcile stale running jobs after a runner crash:
+
+```powershell
+node bin/patchproof.js reconcile --stale-minutes 30 --apply
+```
+
+The stable v1 API is exposed under `/api/v1`. The OpenAPI document is available at `/api/v1/openapi.json`.
 
 Set `PATCHPROOF_ACCESS_LOGS=json` when your log collector expects structured access records. Responses include `X-Request-ID`; preserve or inject that header at the reverse proxy so API logs and proxy logs can be correlated.
 

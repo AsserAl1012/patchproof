@@ -1,6 +1,6 @@
 {
   "name": "patchproof",
-  "version": "0.4.1",
+  "version": "1.0.0",
   "description": "AI-style bug repair with bounded behavioral evidence certificates.",
   "keywords": [
     "bug-fix",
@@ -54,7 +54,8 @@
     "styles.css",
     "worker.js",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -67,7 +68,10 @@
     "start": "node server.js",
     "serve": "node bin/patchproof.js serve",
     "runner": "node bin/patchproof.js runner",
+    "retention": "node bin/patchproof.js retention",
+    "reconcile": "node bin/patchproof.js reconcile",
     "migrate": "node bin/patchproof.js migrate",
+    "doctor:production": "node bin/patchproof.js doctor --production",
     "test": "node --test",
     "check": "node scripts/check.js",
     "integration:services": "node scripts/integration-services.js",

@@ -240,6 +240,53 @@ test("JSON store deduplicates GitHub delivery ids", async () => {
   assert.equal(second.duplicate, true);
 });
 
+test("JSON store cancels runs and reconciles stale running jobs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "patchproof-run-lifecycle-"));
+  const store = new JsonSaasStore({ path: join(dir, "store.json") });
+  const first = await store.createRun({
+    orgId: "org_1",
+    projectId: "prj_1",
+    actorUserId: "usr_1",
+    input: { source: "function x() { return 1; }" }
+  });
+  const cancelled = await store.cancelRun({
+    runId: first.run.id,
+    actorUserId: "usr_1",
+    message: "No longer needed."
+  });
+  assert.equal(cancelled.run.status, "cancelled");
+  assert.equal(cancelled.job.status, "cancelled");
+
+  const second = await store.createRun({
+    orgId: "org_1",
+    projectId: "prj_1",
+    actorUserId: "usr_1",
+    input: { source: "function y() { return 1; }" }
+  });
+  await store.markJobRunning({ jobId: second.job.id, runnerId: "runner_stale" });
+  const staleJob = store.state.jobs.find((job) => job.id === second.job.id);
+  staleJob.startedAt = "2026-01-01T00:00:00.000Z";
+  await store.save();
+
+  const planned = await store.reconcileStaleRuns({
+    dryRun: true,
+    now: new Date("2026-01-01T01:00:00.000Z"),
+    staleAfterMs: 30 * 60 * 1000
+  });
+  assert.equal(planned.staleRuns.length, 1);
+  assert.equal(planned.reconciled, 0);
+
+  const applied = await store.reconcileStaleRuns({
+    dryRun: false,
+    now: new Date("2026-01-01T01:00:00.000Z"),
+    staleAfterMs: 30 * 60 * 1000
+  });
+  const detail = await store.getRunDetail(second.run.id);
+  assert.equal(applied.reconciled, 1);
+  assert.equal(detail.run.status, "failed");
+  assert.match(detail.run.error, /reconciled as stale/);
+});
+
 test("memory queue enqueues and claims jobs", async () => {
   const queue = new MemoryJobQueue();
   await queue.enqueue({ jobId: "job_1", runId: "run_1" });
@@ -291,7 +338,7 @@ test("runner defaults to Docker isolation and current image tag", () => {
     delete process.env.PATCHPROOF_RUNNER_ISOLATION;
     delete process.env.PATCHPROOF_RUNNER_IMAGE;
     assert.equal(resolveRunnerIsolation(), "docker");
-    assert.ok(dockerArgsForPolicy().includes("patchproof:0.4.1"));
+    assert.ok(dockerArgsForPolicy().includes("patchproof:1.0.0"));
   } finally {
     if (previousIsolation === undefined) delete process.env.PATCHPROOF_RUNNER_ISOLATION;
     else process.env.PATCHPROOF_RUNNER_ISOLATION = previousIsolation;
@@ -320,9 +367,30 @@ test("queued runner failure handling preserves missing-run failures", async () =
 
   assert.equal(result.ok, false);
   assert.equal(heartbeats[0].isolation, "process");
-  assert.equal(runningJobs[0].jobId, "job_1");
+  assert.equal(runningJobs.length, 0);
   assert.equal(failedRuns[0].runId, "run_missing");
   assert.match(failedRuns[0].message, /was not found/);
+});
+
+test("queued runner acknowledges already-cancelled runs", async () => {
+  const runningJobs = [];
+  const acked = [];
+  const result = await processQueuedJob({
+    store: {
+      recordRunnerHeartbeat: async () => {},
+      getRunDetail: async () => ({ run: { id: "run_cancelled", status: "cancelled" } }),
+      markJobRunning: async (value) => runningJobs.push(value)
+    },
+    queue: { ack: async (payload) => acked.push(payload) },
+    artifactStore: {},
+    payload: { jobId: "job_1", runId: "run_cancelled" },
+    runnerId: "runner_test",
+    isolation: "process"
+  });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(acked[0].runId, "run_cancelled");
+  assert.equal(runningJobs.length, 0);
 });
 
 test("GitHub comment builders include run evidence", () => {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { PATCHPROOF_VERSION } from "./engine.js";
 import { runPatchProofIsolated } from "./sandbox/hosted-runner.js";
 import { createSaasStore } from "./saas/factory.js";
 import { createJobQueue } from "./saas/queue.js";
@@ -107,10 +108,16 @@ export function createPatchProofServer(options = {}) {
     const startedAt = Date.now();
     res.on("finish", () => logAccess({ req, res, startedAt }));
     const requestPath = (req.url || "").split("?")[0];
+    const apiPath = normalizeApiPath(requestPath);
 
-    if (requestPath.startsWith("/api/") && requestPath !== "/api/run") {
-      if (["/api/bootstrap", "/api/auth/login"].includes(requestPath) && req.method === "POST") {
-        const rate = authRateLimit(`${req.socket.remoteAddress || "unknown"}:${requestPath}`);
+    if (["/api/openapi.json", "/api/v1/openapi.json"].includes(requestPath)) {
+      writeJson(res, 200, buildOpenApiDocument(req));
+      return;
+    }
+
+    if (apiPath.startsWith("/api/") && apiPath !== "/api/run") {
+      if (["/api/bootstrap", "/api/auth/login"].includes(apiPath) && req.method === "POST") {
+        const rate = authRateLimit(`${req.socket.remoteAddress || "unknown"}:${apiPath}`);
         if (!rate.allowed) {
           res.writeHead(429, { ...apiHeaders, "Retry-After": String(rate.retryAfterSeconds) });
           res.end(JSON.stringify({ ok: false, error: { message: "Rate limit exceeded." } }));
@@ -118,7 +125,7 @@ export function createPatchProofServer(options = {}) {
         }
       }
       try {
-        await handleSaasApi({ req, res, requestPath, store, queue, artifactStore, inlineRuns, enableApi });
+        await handleSaasApi({ req, res, requestPath: apiPath, store, queue, artifactStore, inlineRuns, enableApi });
       } catch (error) {
         writeJson(res, error.statusCode || 500, {
           ok: false,
@@ -128,7 +135,7 @@ export function createPatchProofServer(options = {}) {
       return;
     }
 
-    if (requestPath === "/api/run") {
+    if (apiPath === "/api/run") {
       if (!enableApi) {
         writeJson(res, 404, { ok: false, error: { message: "API is disabled." } });
         return;
@@ -175,7 +182,7 @@ export function createPatchProofServer(options = {}) {
     }
 
     if (requestPath === "/healthz") {
-      const body = JSON.stringify({ ok: true, service: "patchproof", version: "0.4.1" });
+      const body = JSON.stringify({ ok: true, service: "patchproof", version: PATCHPROOF_VERSION });
       res.writeHead(200, {
         ...securityHeaders,
         "Content-Type": "application/json; charset=utf-8",
@@ -444,6 +451,20 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     return;
   }
 
+  const cancelMatch = requestPath.match(/^\/api\/runs\/([^/]+)\/cancel$/);
+  if (cancelMatch && method === "POST") {
+    requirePermission(role, "run:create");
+    const detail = await store.getRunDetail(cancelMatch[1]);
+    if (!detail || detail.run.orgId !== primaryOrgId) throw notFound("Run");
+    const result = await store.cancelRun({
+      runId: detail.run.id,
+      actorUserId: actorUserId(auth),
+      message: body.message || "Run cancelled from API."
+    });
+    writeJson(res, 200, { ok: true, ...result });
+    return;
+  }
+
   const runLogsMatch = requestPath.match(/^\/api\/runs\/([^/]+)\/logs$/);
   if (runLogsMatch && method === "GET") {
     requirePermission(role, "run:read");
@@ -611,6 +632,25 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
     return;
   }
 
+  if (requestPath === "/api/admin/reconcile" && method === "POST") {
+    requirePermission(role, "admin:write");
+    const result = await store.reconcileStaleRuns({
+      dryRun: body.dryRun !== false,
+      staleAfterMs: body.staleAfterMs || undefined
+    });
+    await store.addAuditEvent?.({
+      orgId: primaryOrgId,
+      actorUserId: actorUserId(auth),
+      action: body.dryRun === false ? "runs.reconciled" : "runs.reconcile_planned",
+      targetType: "org",
+      targetId: primaryOrgId,
+      metadata: { reconciled: result.reconciled, staleRuns: result.staleRuns.length }
+    });
+    await store.save?.();
+    writeJson(res, 200, { ok: true, reconciliation: result });
+    return;
+  }
+
   if (requestPath === "/api/admin/api-keys" && method === "GET") {
     requirePermission(role, "admin:read");
     writeJson(res, 200, { ok: true, apiKeys: await store.listApiKeys(primaryOrgId) });
@@ -644,14 +684,144 @@ async function handleSaasApi({ req, res, requestPath, store, queue, artifactStor
   throw notFound("API route");
 }
 
+function buildOpenApiDocument(req) {
+  const origin = `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "127.0.0.1:4173"}`;
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "PatchProof API",
+      version: PATCHPROOF_VERSION,
+      description: "Self-hosted PatchProof v1 API for projects, queued runs, certificates, operations, and replay."
+    },
+    servers: [{ url: `${origin}/api/v1` }],
+    security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+    paths: {
+      "/bootstrap": {
+        post: {
+          summary: "Bootstrap the first owner account",
+          security: [],
+          responses: { "201": { description: "Bootstrap complete" } }
+        }
+      },
+      "/auth/login": {
+        post: {
+          summary: "Create an HttpOnly browser session or return a bearer token",
+          security: [],
+          responses: { "200": { description: "Authenticated" } }
+        }
+      },
+      "/me": { get: { summary: "Current authenticated user", responses: { "200": { description: "User and orgs" } } } },
+      "/projects": {
+        get: { summary: "List projects", responses: { "200": { description: "Projects" } } },
+        post: { summary: "Create project", responses: { "201": { description: "Project created" } } }
+      },
+      "/projects/{projectId}": {
+        get: {
+          summary: "Read project",
+          parameters: [pathParameter("projectId")],
+          responses: { "200": { description: "Project" } }
+        }
+      },
+      "/projects/{projectId}/runs": {
+        get: {
+          summary: "List project runs",
+          parameters: [pathParameter("projectId")],
+          responses: { "200": { description: "Runs" } }
+        },
+        post: {
+          summary: "Queue a PatchProof run",
+          parameters: [pathParameter("projectId")],
+          responses: { "202": { description: "Run queued" } }
+        }
+      },
+      "/runs/{runId}": {
+        get: {
+          summary: "Read run detail",
+          parameters: [pathParameter("runId")],
+          responses: { "200": { description: "Run, job, certificate, artifacts" } }
+        }
+      },
+      "/runs/{runId}/cancel": {
+        post: {
+          summary: "Cancel a queued or running run",
+          parameters: [pathParameter("runId")],
+          responses: { "200": { description: "Run cancelled" }, "409": { description: "Run already terminal" } }
+        }
+      },
+      "/runs/{runId}/logs": {
+        get: {
+          summary: "Read run logs",
+          parameters: [pathParameter("runId")],
+          responses: { "200": { description: "Logs" } }
+        }
+      },
+      "/runs/{runId}/certificate": {
+        get: {
+          summary: "Download certificate",
+          parameters: [pathParameter("runId")],
+          responses: { "200": { description: "Certificate" } }
+        }
+      },
+      "/runs/{runId}/replay": {
+        post: {
+          summary: "Queue a replay run from a certificate",
+          parameters: [pathParameter("runId")],
+          responses: { "202": { description: "Replay queued" } }
+        }
+      },
+      "/runs/{runId}/apply-patch": {
+        post: {
+          summary: "Record or request patch application",
+          parameters: [pathParameter("runId")],
+          responses: { "200": { description: "Apply request recorded" } }
+        }
+      },
+      "/admin/settings": {
+        get: { summary: "Read masked admin settings", responses: { "200": { description: "Settings" } } },
+        patch: { summary: "Update admin settings", responses: { "200": { description: "Settings updated" } } }
+      },
+      "/admin/runners": { get: { summary: "List runner heartbeats", responses: { "200": { description: "Runners" } } } },
+      "/admin/retention": { post: { summary: "Plan or apply retention cleanup", responses: { "200": { description: "Retention result" } } } },
+      "/admin/reconcile": { post: { summary: "Plan or apply stale-run reconciliation", responses: { "200": { description: "Reconciliation result" } } } },
+      "/admin/api-keys": {
+        get: { summary: "List API keys", responses: { "200": { description: "API keys" } } },
+        post: { summary: "Create API key", responses: { "201": { description: "API key and one-time token" } } }
+      },
+      "/audit-events": { get: { summary: "List audit events", responses: { "200": { description: "Audit events" } } } },
+      "/run": {
+        post: {
+          summary: "Local/demo quick run through isolated hosted runner",
+          security: [],
+          responses: { "200": { description: "PatchProof result" } }
+        }
+      }
+    },
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer" },
+        cookieAuth: { type: "apiKey", in: "cookie", name: SESSION_COOKIE_NAME }
+      }
+    }
+  };
+}
+
+function pathParameter(name) {
+  return { name, in: "path", required: true, schema: { type: "string" } };
+}
+
 function writeJson(res, statusCode, value, headers = {}) {
   const body = JSON.stringify(value);
   res.writeHead(statusCode, {
     ...apiHeaders,
+    "X-PatchProof-API-Version": "1",
     "Content-Length": Buffer.byteLength(body),
     ...headers
   });
   res.end(body);
+}
+
+function normalizeApiPath(requestPath) {
+  return requestPath.startsWith("/api/v1/") ? requestPath.replace(/^\/api\/v1/, "/api") : requestPath;
 }
 
 function logAccess({ req, res, startedAt }) {
@@ -754,6 +924,7 @@ function renderPrometheusMetrics(metrics) {
     `patchproof_runs_certified_total ${metrics.runsCertified}`,
     `patchproof_runs_rejected_total ${metrics.runsRejected}`,
     `patchproof_runs_failed_total ${metrics.runsFailed}`,
+    `patchproof_runs_cancelled_total ${metrics.runsCancelled || 0}`,
     ""
   ].join("\n");
 }

@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, createPublicKey, sign, timingSafeEqual, verify } from "node:crypto";
 
 export const CERTIFICATE_SCHEMA = "patchproof.certificate.v2";
-export const PATCHPROOF_VERSION = "0.4.1";
+export const PATCHPROOF_VERSION = "1.0.0";
 export const CERTIFICATE_SIGNATURE_ALGORITHM = "Ed25519";
 const DEFAULT_LIMITS = Object.freeze({
   maxSourceChars: 12000,

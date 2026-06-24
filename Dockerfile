@@ -20,7 +20,7 @@ COPY migrations ./migrations
 COPY patchproof.yml ./
 COPY saas ./saas
 COPY sandbox ./sandbox
-COPY LICENSE README.md action.yml ./
+COPY LICENSE README.md SECURITY.md CHANGELOG.md action.yml ./
 
 RUN useradd --system --create-home --uid 10001 patchproof \
   && chown -R patchproof:patchproof /app

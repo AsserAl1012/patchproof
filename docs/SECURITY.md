@@ -25,6 +25,8 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - GitHub webhook signatures are verified and delivery IDs are deduplicated before creating runs.
 - Responses include `X-Request-ID`; optional `PATCHPROOF_ACCESS_LOGS=json` emits structured access logs.
 - `patchproof retention` removes expired sessions, artifact metadata/files, audit events, and old webhook delivery records according to configured retention windows.
+- Queued/running project runs can be cancelled, and `patchproof reconcile` marks stale running jobs failed after runner crashes.
+- `patchproof keygen` generates production encryption and certificate signing material; `patchproof doctor --production` validates required self-hosted controls before launch.
 
 ## Trust Boundary
 

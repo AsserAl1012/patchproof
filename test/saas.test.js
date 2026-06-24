@@ -10,16 +10,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 
-async function startSaasServer() {
+async function startSaasServer(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), "patchproof-saas-"));
   const store = new JsonSaasStore({ path: join(dir, "store.json") });
   const queue = new MemoryJobQueue();
   const artifactStore = new LocalArtifactStore({ root: join(dir, "artifacts") });
-  const server = createPatchProofServer({ store, queue, artifactStore, inlineRuns: true });
+  const server = createPatchProofServer({ store, queue, artifactStore, inlineRuns: options.inlineRuns ?? true });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
-      resolve({ server, store, baseUrl: `http://127.0.0.1:${port}` });
+      resolve({ server, store, queue, baseUrl: `http://127.0.0.1:${port}` });
     });
   });
 }
@@ -195,6 +195,40 @@ test("SaaS flow bootstraps, creates project, creates run, and reads artifacts", 
   }
 });
 
+test("SaaS API cancels queued runs", async () => {
+  const { server, baseUrl } = await startSaasServer({ inlineRuns: false });
+  try {
+    const { token, orgId } = await bootstrap(baseUrl);
+    const projectRes = await request(baseUrl, "/api/projects", {
+      method: "POST",
+      token,
+      orgId,
+      body: { name: "Cancellable Project" }
+    });
+    const runRes = await request(baseUrl, `/api/projects/${projectRes.json.project.id}/runs`, {
+      method: "POST",
+      token,
+      orgId,
+      body: { input: createInputFromExample(examples[0]), trigger: "manual" }
+    });
+    assert.equal(runRes.response.status, 202);
+    const cancel = await request(baseUrl, `/api/runs/${runRes.json.run.id}/cancel`, {
+      method: "POST",
+      token,
+      orgId,
+      body: { message: "Stop this run." }
+    });
+    assert.equal(cancel.response.status, 200);
+    assert.equal(cancel.json.run.status, "cancelled");
+
+    const detail = await request(baseUrl, `/api/runs/${runRes.json.run.id}`, { token, orgId });
+    assert.equal(detail.json.run.status, "cancelled");
+    assert.equal(detail.json.job.status, "cancelled");
+  } finally {
+    server.close();
+  }
+});
+
 test("SaaS runner uses configured model provider candidates", async () => {
   const modelServer = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -296,6 +330,12 @@ test("SaaS admin endpoints expose settings, runners, readiness, and metrics", as
     const ready = await fetch(`${baseUrl}/readyz`);
     assert.equal(ready.status, 200);
     assert.ok(ready.headers.get("x-request-id"));
+
+    const openapi = await fetch(`${baseUrl}/api/v1/openapi.json`);
+    assert.equal(openapi.status, 200);
+    const spec = await openapi.json();
+    assert.equal(spec.openapi, "3.1.0");
+    assert.ok(spec.paths["/runs/{runId}/cancel"]);
 
     const metrics = await fetch(`${baseUrl}/metrics`);
     const text = await metrics.text();

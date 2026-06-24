@@ -365,6 +365,15 @@ export class PostgresSaasStore {
   async markJobRunning({ jobId, runnerId, phase = "claimed" }) {
     await this.load();
     const now = nowIso();
+    const current = await this.pool.query(
+      `SELECT j.id, j.run_id, r.status AS run_status
+       FROM jobs j
+       JOIN runs r ON r.id = j.run_id
+       WHERE j.id = $1`,
+      [jobId]
+    );
+    if (!current.rows[0]) throw statusError("Job not found.", 404);
+    if (current.rows[0].run_status === "cancelled") throw statusError("Run was cancelled.", 409);
     const result = await this.pool.query(
       `UPDATE jobs
        SET status = 'running', phase = $2, runner_id = $3, claimed_by = $3, started_at = COALESCE(started_at, $4), attempt = attempt + 1
@@ -432,6 +441,7 @@ export class PostgresSaasStore {
       const runResult = await client.query("SELECT * FROM runs WHERE id = $1", [runId]);
       const runRow = runResult.rows[0];
       if (!runRow) throw statusError("Run not found.", 404);
+      if (runRow.status === "cancelled") throw statusError("Run was cancelled.", 409);
       const now = nowIso();
       const finalStatus = status || certificate?.status || "completed";
       const evidenceScore = certificate?.selectedPatch?.evidenceScore || 0;
@@ -506,6 +516,86 @@ export class PostgresSaasStore {
     const run = fromRunRow(runResult.rows[0]);
     await this.addAuditEvent({ orgId: run.orgId, actorUserId: run.actorUserId, action: "run.failed", targetType: "run", targetId: run.id });
     return run;
+  }
+
+  async cancelRun({ runId, actorUserId = null, message = "Run cancelled by request." }) {
+    await this.load();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query("SELECT * FROM runs WHERE id = $1", [runId]);
+      const runRow = current.rows[0];
+      if (!runRow) throw statusError("Run not found.", 404);
+      if (isTerminalRunStatus(runRow.status) && runRow.status !== "cancelled") {
+        throw statusError(`Run is already ${runRow.status} and cannot be cancelled.`, 409);
+      }
+      const now = nowIso();
+      const runResult = await client.query(
+        "UPDATE runs SET status = 'cancelled', error = $2, updated_at = $3 WHERE id = $1 RETURNING *",
+        [runId, message, now]
+      );
+      const jobResult = await client.query(
+        `UPDATE jobs
+         SET status = 'cancelled', phase = 'cancelled', completed_at = COALESCE(completed_at, $2),
+             exit_reason = $3, logs = COALESCE(logs, '[]'::jsonb) || $4::jsonb
+         WHERE run_id = $1
+         RETURNING *`,
+        [runId, now, message, JSON.stringify([message])]
+      );
+      await client.query(
+        "UPDATE job_attempts SET status = 'cancelled', completed_at = $2, exit_reason = $3 WHERE run_id = $1 AND completed_at IS NULL",
+        [runId, now, message]
+      );
+      await insertAuditEvent(client, {
+        orgId: runRow.org_id,
+        actorUserId: actorUserId || runRow.actor_user_id,
+        action: "run.cancelled",
+        targetType: "run",
+        targetId: runId,
+        metadata: { message }
+      });
+      await client.query("COMMIT");
+      return {
+        run: fromRunRow(runResult.rows[0]),
+        job: jobResult.rows[0] ? fromJobRow(jobResult.rows[0]) : null
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async reconcileStaleRuns({ staleAfterMs = defaultStaleRunMs(), dryRun = false, now = new Date() } = {}) {
+    await this.load();
+    const cutoff = new Date(now.getTime() - Math.max(1, Number(staleAfterMs))).toISOString();
+    const result = await this.pool.query(
+      `SELECT j.*, r.status AS run_status
+       FROM jobs j
+       JOIN runs r ON r.id = j.run_id
+       WHERE j.status = 'running'
+         AND COALESCE(j.started_at, j.created_at) < $1
+         AND r.status NOT IN ('certified', 'rejected', 'failed', 'completed', 'cancelled')
+       ORDER BY COALESCE(j.started_at, j.created_at) ASC`,
+      [cutoff]
+    );
+    const staleRuns = result.rows.map((row) => ({
+      runId: row.run_id,
+      jobId: row.id,
+      runnerId: row.runner_id,
+      status: row.status,
+      phase: row.phase,
+      startedAt: iso(row.started_at),
+      ageMs: now.getTime() - new Date(row.started_at || row.created_at).getTime()
+    }));
+    if (dryRun) return { dryRun: true, staleRuns, reconciled: 0 };
+
+    const message = `Run reconciled as stale after ${Math.round(Math.max(1, Number(staleAfterMs)) / 60000)} minute(s).`;
+    for (const item of staleRuns) {
+      await this.failRun({ runId: item.runId, message, logs: [message] });
+    }
+    return { dryRun: false, staleRuns, reconciled: staleRuns.length };
   }
 
   async listRuns(orgId, projectId = null) {
@@ -665,6 +755,7 @@ export class PostgresSaasStore {
         (SELECT COUNT(*)::int FROM runs WHERE status = 'certified') AS runs_certified,
         (SELECT COUNT(*)::int FROM runs WHERE status = 'rejected') AS runs_rejected,
         (SELECT COUNT(*)::int FROM runs WHERE status = 'failed') AS runs_failed,
+        (SELECT COUNT(*)::int FROM runs WHERE status = 'cancelled') AS runs_cancelled,
         (SELECT COUNT(*)::int FROM jobs WHERE status = 'queued') AS queue_depth,
         (SELECT COUNT(*)::int FROM runner_heartbeats WHERE last_seen_at > now() - interval '2 minutes') AS runner_count,
         (SELECT COUNT(*)::int FROM audit_events) AS audit_events
@@ -675,6 +766,7 @@ export class PostgresSaasStore {
       runsCertified: row.runs_certified,
       runsRejected: row.runs_rejected,
       runsFailed: row.runs_failed,
+      runsCancelled: row.runs_cancelled,
       queueDepth: row.queue_depth,
       runnerCount: row.runner_count,
       auditEvents: row.audit_events
@@ -960,6 +1052,14 @@ function iso(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function defaultStaleRunMs() {
+  return Number(process.env.PATCHPROOF_STALE_RUN_MS || 30 * 60 * 1000);
+}
+
+function isTerminalRunStatus(status) {
+  return ["certified", "rejected", "failed", "completed", "cancelled"].includes(String(status || ""));
 }
 
 function statusError(message, statusCode) {

@@ -22,6 +22,18 @@ PATCHPROOF_SECRET_KEY=<random secret for encrypted settings>
 
 `PATCHPROOF_SECRET_KEY` is mandatory in production, must be at least 32 characters, and must remain stable across restarts or encrypted provider/GitHub settings cannot be recovered.
 
+Generate production secret material with:
+
+```powershell
+npx patchproof keygen --issuer your-org --key-id 2026-rotation-1
+```
+
+Validate a configured host before launch with:
+
+```powershell
+npx patchproof doctor --production
+```
+
 Run migrations explicitly with:
 
 ```powershell
@@ -33,6 +45,12 @@ Run retention cleanup explicitly with:
 ```powershell
 npm run retention -- --dry-run
 npm run retention
+```
+
+Reconcile stale running jobs after an unclean runner shutdown with:
+
+```powershell
+node bin/patchproof.js reconcile --stale-minutes 30 --apply
 ```
 
 ## Roles
@@ -112,6 +130,8 @@ Use:
 
 Every response includes `X-Request-ID`. Set `PATCHPROOF_ACCESS_LOGS=json` to emit JSON access logs with request ID, path, status, and duration. The dashboard exposes runner health, settings, and audit logs for owners/admins.
 
+The stable v1 HTTP API is available under `/api/v1`. The OpenAPI document is served at `/api/v1/openapi.json`.
+
 Run workers with:
 
 ```powershell
@@ -121,3 +141,9 @@ npm run runner -- --isolation docker
 Docker Compose starts a dedicated `patchproof-runner` service automatically.
 
 Runner shutdown is graceful: `SIGINT` and `SIGTERM` stop the polling loop after the current claimed job finishes. GitHub webhook delivery IDs are stored and deduplicated so retry deliveries do not create duplicate runs.
+
+Queued or running jobs can be cancelled from the dashboard or:
+
+```text
+POST /api/v1/runs/:id/cancel
+```

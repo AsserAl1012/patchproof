@@ -16,13 +16,16 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
     isolation: effectiveIsolation,
     metadata: { pid: process.pid }
   });
-  await store.markJobRunning({ jobId: payload.jobId, runnerId, phase: "claimed" });
-
   const logs = [`claimed ${payload.jobId}`, `phase baseline`, `phase repairing`, `phase verifying`];
 
   try {
     detail = await store.getRunDetail(payload.runId);
     if (!detail) throw new Error(`Run ${payload.runId} was not found.`);
+    if (detail.run.status === "cancelled") {
+      await queue.ack?.(payload);
+      return { ok: false, cancelled: true, run: detail.run };
+    }
+    await store.markJobRunning({ jobId: payload.jobId, runnerId, phase: "claimed" });
     const settings = await store.getSettings(detail.run.orgId);
     const runnerPolicy = payload.runnerPolicy || buildRunnerPolicy({
       orgId: detail.run.orgId,
@@ -65,6 +68,11 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
       { isolation: effectiveIsolation }
     );
     if (!result.ok) throw new Error(result.error?.message || "Runner failed.");
+    const latest = await store.getRunDetail(detail.run.id);
+    if (latest?.run?.status === "cancelled") {
+      await queue.ack?.(payload);
+      return { ok: false, cancelled: true, run: latest.run };
+    }
     await store.updateJobPhase({ jobId: payload.jobId, phase: "uploading", logs: ["uploading artifacts"] });
     const certificate = result.result.certificate;
     const resultLogs = result.result.logs || [];
@@ -124,6 +132,16 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
     return { ok: true, ...completed };
   } catch (error) {
     const runId = detail?.run?.id || payload.runId;
+    let latest = null;
+    try {
+      latest = await store.getRunDetail?.(runId);
+    } catch {
+      latest = null;
+    }
+    if (latest?.run?.status === "cancelled") {
+      await queue.ack?.(payload);
+      return { ok: false, cancelled: true, error };
+    }
     const retryable = isRetryableJobError(error, detail);
     const queueResult = await queue.fail?.(payload, error, { retry: retryable }) || { retry: false, deadLettered: true };
     if (queueResult.retry) {

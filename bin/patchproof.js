@@ -1,6 +1,9 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PATCHPROOF_VERSION } from "../engine.js";
 import {
   createInputFromExample,
@@ -25,6 +28,10 @@ try {
     await runnerCommand(args.slice(1));
   } else if (command === "retention") {
     await retentionCommand(args.slice(1));
+  } else if (command === "reconcile") {
+    await reconcileCommand(args.slice(1));
+  } else if (command === "keygen") {
+    await keygenCommand(args.slice(1));
   } else if (command === "migrate") {
     await migrateCommand();
   } else if (command === "scenarios") {
@@ -134,6 +141,10 @@ async function initCommand(initArgs) {
 }
 
 async function doctorCommand(doctorArgs) {
+  if (doctorArgs.includes("--production")) {
+    await productionDoctorCommand(doctorArgs);
+    return;
+  }
   const repoRoot = readOption(doctorArgs, "--repo");
   const configPath = readOption(doctorArgs, "--config");
   const jsonMode = doctorArgs.includes("--json");
@@ -148,6 +159,145 @@ async function doctorCommand(doctorArgs) {
     }
   }
   if (report.overall === "error") process.exitCode = 4;
+}
+
+async function productionDoctorCommand(doctorArgs) {
+  const jsonMode = doctorArgs.includes("--json");
+  const skipServiceHealth = doctorArgs.includes("--skip-service-health");
+  const checks = [];
+  addProductionCheck(checks, "Node.js", "ok", process.version);
+
+  const packageRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+  const releaseCheck = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/verify-release.js", import.meta.url))], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    windowsHide: true
+  });
+  addProductionCheck(
+    checks,
+    "Release metadata",
+    releaseCheck.status === 0 ? "ok" : "error",
+    (releaseCheck.stdout || releaseCheck.stderr || "release verification failed").trim()
+  );
+
+  const dockerVersion = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  addProductionCheck(
+    checks,
+    "Docker daemon",
+    dockerVersion.status === 0 ? "ok" : "error",
+    dockerVersion.status === 0 ? `server ${dockerVersion.stdout.trim()}` : dockerStartError(dockerVersion)
+  );
+
+  const runnerImage = process.env.PATCHPROOF_RUNNER_IMAGE || `patchproof:${PATCHPROOF_VERSION}`;
+  const imageInspect = spawnSync("docker", ["image", "inspect", runnerImage], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  addProductionCheck(
+    checks,
+    "Runner image",
+    imageInspect.status === 0 ? "ok" : "warn",
+    imageInspect.status === 0 ? runnerImage : `${runnerImage} was not found locally; build or pull it before starting runners.`
+  );
+
+  const runtime = process.env.PATCHPROOF_DOCKER_RUNTIME || "";
+  if (runtime) {
+    const runtimes = spawnSync("docker", ["info", "--format", "{{json .Runtimes}}"], {
+      encoding: "utf8",
+      windowsHide: true
+    });
+    addProductionCheck(
+      checks,
+      "Docker runtime",
+      runtimes.status === 0 && runtimes.stdout.includes(`"${runtime}"`) ? "ok" : "error",
+      runtimes.status === 0
+        ? `${runtime}${runtimes.stdout.includes(`"${runtime}"`) ? " is available" : " is not registered in Docker"}`
+        : dockerStartError(runtimes)
+    );
+  } else {
+    addProductionCheck(checks, "Docker runtime", "warn", "PATCHPROOF_DOCKER_RUNTIME is unset; Docker default runtime will be used.");
+  }
+
+  const nodeEnv = process.env.NODE_ENV || "";
+  addProductionCheck(
+    checks,
+    "NODE_ENV",
+    nodeEnv === "production" ? "ok" : "warn",
+    nodeEnv === "production" ? "production" : "Set NODE_ENV=production for deployed API/runner processes."
+  );
+
+  const secret = String(process.env.PATCHPROOF_SECRET_KEY || "");
+  addProductionCheck(
+    checks,
+    "PATCHPROOF_SECRET_KEY",
+    secret && secret.length >= 32 && !/replace-with|changeme|example/i.test(secret) && secret !== "patchproof-development-secret-key" ? "ok" : "error",
+    secret ? "configured" : "missing; run `patchproof keygen` and set the generated value"
+  );
+
+  const storeDriver = process.env.PATCHPROOF_STORE_DRIVER || (process.env.DATABASE_URL ? "postgres" : "");
+  addProductionCheck(
+    checks,
+    "Store driver",
+    storeDriver === "postgres" && process.env.DATABASE_URL ? "ok" : "error",
+    storeDriver === "postgres" && process.env.DATABASE_URL
+      ? "postgres configured"
+      : "Set PATCHPROOF_STORE_DRIVER=postgres and DATABASE_URL."
+  );
+
+  const queueDriver = process.env.PATCHPROOF_QUEUE_DRIVER || (process.env.REDIS_URL ? "redis" : "");
+  addProductionCheck(
+    checks,
+    "Queue driver",
+    queueDriver === "redis" && process.env.REDIS_URL ? "ok" : "error",
+    queueDriver === "redis" && process.env.REDIS_URL
+      ? "redis configured"
+      : "Set PATCHPROOF_QUEUE_DRIVER=redis and REDIS_URL."
+  );
+
+  const artifactDriver = process.env.PATCHPROOF_ARTIFACT_DRIVER || (process.env.PATCHPROOF_S3_BUCKET ? "s3" : "");
+  const s3Configured = Boolean(
+    process.env.PATCHPROOF_S3_BUCKET &&
+      process.env.PATCHPROOF_S3_ACCESS_KEY_ID &&
+      process.env.PATCHPROOF_S3_SECRET_ACCESS_KEY
+  );
+  addProductionCheck(
+    checks,
+    "Artifact driver",
+    artifactDriver === "s3" && s3Configured ? "ok" : "error",
+    artifactDriver === "s3" && s3Configured
+      ? `s3 bucket ${process.env.PATCHPROOF_S3_BUCKET}`
+      : "Set PATCHPROOF_ARTIFACT_DRIVER=s3 and S3 bucket/credentials."
+  );
+
+  addProductionCheck(checks, "Certificate signing", ...certificateSigningCheck());
+
+  if (!skipServiceHealth) {
+    await appendServiceHealthChecks(checks);
+  }
+
+  const overall = checks.some((check) => check.status === "error")
+    ? "error"
+    : checks.some((check) => check.status === "warn")
+      ? "warn"
+      : "ok";
+  const report = {
+    overall,
+    version: PATCHPROOF_VERSION,
+    generatedAt: new Date().toISOString(),
+    checks
+  };
+  if (jsonMode) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(`PatchProof production doctor: ${overall}`);
+    for (const check of checks) {
+      console.log(`${check.status.toUpperCase()}\t${check.name}\t${check.message}`);
+    }
+  }
+  if (overall === "error") process.exitCode = 4;
 }
 
 async function targetsCommand(targetArgs) {
@@ -269,6 +419,53 @@ async function retentionCommand(retentionArgs) {
   );
 }
 
+async function reconcileCommand(reconcileArgs) {
+  const { createSaasStore } = await import("../saas/factory.js");
+  const dryRun = !reconcileArgs.includes("--apply");
+  const jsonMode = reconcileArgs.includes("--json");
+  const staleMinutes = Number(readOption(reconcileArgs, "--stale-minutes") || 30);
+  const store = createSaasStore();
+  const result = await store.reconcileStaleRuns({
+    dryRun,
+    staleAfterMs: Math.max(1, staleMinutes) * 60 * 1000
+  });
+  await store.close?.();
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    `reconcile ${dryRun ? "planned" : "applied"}: stale=${result.staleRuns.length}, reconciled=${result.reconciled}`
+  );
+  if (dryRun && result.staleRuns.length) {
+    console.log("next: rerun with --apply to mark stale runs failed");
+  }
+}
+
+async function keygenCommand(keygenArgs) {
+  const jsonMode = keygenArgs.includes("--json");
+  const issuer = readOption(keygenArgs, "--issuer") || "patchproof";
+  const keyId = readOption(keygenArgs, "--key-id") || new Date().toISOString().slice(0, 10);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" });
+  const values = {
+    PATCHPROOF_SECRET_KEY: randomBytes(48).toString("base64url"),
+    PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM: privateKeyPem,
+    PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM: publicKeyPem,
+    PATCHPROOF_CERTIFICATE_ISSUER: issuer,
+    PATCHPROOF_CERTIFICATE_KEY_ID: keyId
+  };
+  if (jsonMode) {
+    console.log(JSON.stringify(values, null, 2));
+    return;
+  }
+  console.log("# Add these to the API and runner environment. Rotate per your deployment policy.");
+  for (const [key, value] of Object.entries(values)) {
+    console.log(`${key}=${escapeEnvValue(value)}`);
+  }
+}
+
 async function migrateCommand() {
   const { createSaasStore } = await import("../saas/factory.js");
   const store = createSaasStore({ driver: "postgres" });
@@ -291,6 +488,91 @@ async function inputFromFile(filePath) {
     postconditionText: raw.postconditionText || raw.postcondition || "",
     limits: raw.limits
   };
+}
+
+async function appendServiceHealthChecks(checks) {
+  if (process.env.DATABASE_URL || process.env.PATCHPROOF_STORE_DRIVER === "postgres") {
+    let store;
+    try {
+      const { createSaasStore } = await import("../saas/factory.js");
+      store = createSaasStore({ driver: "postgres" });
+      const health = await store.health();
+      addProductionCheck(checks, "Postgres health", health.ok ? "ok" : "error", health.ok ? "reachable" : "migrations pending");
+    } catch (error) {
+      addProductionCheck(checks, "Postgres health", "error", error.message);
+    } finally {
+      await closeQuietly(store);
+    }
+  }
+
+  if (process.env.REDIS_URL || process.env.PATCHPROOF_QUEUE_DRIVER === "redis") {
+    let queue;
+    try {
+      const { createJobQueue } = await import("../saas/queue.js");
+      queue = createJobQueue({ driver: "redis" });
+      const health = await queue.health();
+      addProductionCheck(checks, "Redis health", health.ok ? "ok" : "error", `depth=${health.depth}, inFlight=${health.inFlight}, dead=${health.dead}`);
+    } catch (error) {
+      addProductionCheck(checks, "Redis health", "error", error.message);
+    } finally {
+      await closeQuietly(queue);
+    }
+  }
+
+  if (process.env.PATCHPROOF_S3_BUCKET || process.env.PATCHPROOF_ARTIFACT_DRIVER === "s3") {
+    try {
+      const { createArtifactStore } = await import("../saas/artifacts.js");
+      const artifacts = createArtifactStore({ driver: "s3" });
+      const health = await artifacts.health();
+      addProductionCheck(checks, "S3/MinIO health", health.ok ? "ok" : "error", health.ok ? `bucket=${health.bucket}` : "not reachable");
+    } catch (error) {
+      addProductionCheck(checks, "S3/MinIO health", "error", error.message);
+    }
+  }
+}
+
+function certificateSigningCheck() {
+  const privateKeyPem = normalizePem(process.env.PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM);
+  const publicKeyPem = normalizePem(process.env.PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM);
+  if (!privateKeyPem && !publicKeyPem) {
+    return ["warn", "certificate issuer signing is disabled"];
+  }
+  if (!privateKeyPem || !publicKeyPem) {
+    return ["error", "set both PATCHPROOF_CERTIFICATE_PRIVATE_KEY_PEM and PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM"];
+  }
+  try {
+    const privateKey = createPrivateKey(privateKeyPem);
+    const publicKey = createPublicKey(publicKeyPem);
+    const payload = Buffer.from("patchproof certificate signing check", "utf8");
+    const signature = sign(null, payload, privateKey);
+    return verify(null, payload, publicKey, signature)
+      ? ["ok", `issuer=${process.env.PATCHPROOF_CERTIFICATE_ISSUER || "patchproof"}, keyId=${process.env.PATCHPROOF_CERTIFICATE_KEY_ID || "default"}`]
+      : ["error", "certificate key pair did not verify"];
+  } catch (error) {
+    return ["error", error.message];
+  }
+}
+
+function addProductionCheck(checks, name, status, message) {
+  checks.push({ name, status, message });
+}
+
+function dockerStartError(result) {
+  return result.error?.message || (result.stderr || result.stdout || "docker command failed").trim();
+}
+
+function escapeEnvValue(value) {
+  return String(value).replace(/\r?\n/g, "\\n");
+}
+
+function normalizePem(value) {
+  return String(value || "").trim().replace(/\\n/g, "\n");
+}
+
+async function closeQuietly(service) {
+  try {
+    await service?.close?.();
+  } catch {}
 }
 
 async function maybeAttachModelCandidates(input, { args, repoRoot, configPath, targetId } = {}) {
@@ -389,10 +671,13 @@ Usage:
   patchproof serve [--port 4173] [--host 127.0.0.1]
   patchproof runner [--once] [--id runner_1] [--isolation docker|process]
   patchproof retention [--dry-run] [--json]
+  patchproof reconcile [--stale-minutes 30] [--apply] [--json]
+  patchproof keygen [--issuer patchproof] [--key-id 2026-rotation-1] [--json]
   patchproof migrate
   patchproof scenarios
   patchproof init [--repo .] [--config patchproof.yml] [--force] [--json]
   patchproof doctor [--repo .] [--config patchproof.yml] [--json]
+  patchproof doctor --production [--skip-service-health] [--json]
   patchproof inspect [--repo .] [--config patchproof.yml] [--json]
   patchproof targets [--repo .] [--config patchproof.yml] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]

@@ -61,6 +61,9 @@ node bin/patchproof.js serve --port 4173
 node bin/patchproof.js migrate
 node bin/patchproof.js runner --isolation docker
 node bin/patchproof.js retention --dry-run
+node bin/patchproof.js reconcile --stale-minutes 30 --apply
+node bin/patchproof.js keygen
+node bin/patchproof.js doctor --production
 ```
 
 ## Main Screen
@@ -81,7 +84,7 @@ function clamp(value, min, max) {
 }
 ```
 
-PatchProof expects a normal function declaration. Arrow functions and modules are not supported in this prototype.
+The direct editor expects one named function. Repository targets can also extract common JavaScript/TypeScript declarations, exported functions, const function expressions, arrow functions, object methods, and class methods into a function-level verifier input.
 
 ### Executable Tests
 
@@ -141,6 +144,7 @@ The expressions can reference:
 - `Saved Runs`: automatically stores recent certificates in local browser storage.
 - `Export`: downloads saved run history.
 - `Import Certificate`: loads a certificate or exported history file.
+- `Cancel Selected Run`: cancels the selected queued/running project run from the operations panel.
 
 ## Private SaaS Dashboard
 
@@ -161,6 +165,20 @@ node bin/patchproof.js retention
 ```
 
 Owners/admins can also call `POST /api/admin/retention` with `{ "dryRun": true }`.
+
+Cancel a queued/running run from the dashboard or API:
+
+```text
+POST /api/v1/runs/:id/cancel
+```
+
+Reconcile stale running jobs after a runner crash:
+
+```powershell
+node bin/patchproof.js reconcile --stale-minutes 30 --apply
+```
+
+The stable API is available under `/api/v1`; OpenAPI metadata is served at `/api/v1/openapi.json`.
 
 ## Reading Results
 
@@ -384,6 +402,8 @@ PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM=<Ed25519 public key PEM>
 PATCHPROOF_CERTIFICATE_ISSUER=<issuer name>
 PATCHPROOF_CERTIFICATE_KEY_ID=<key id>
 ```
+
+Use `patchproof keygen` to generate a compatible `PATCHPROOF_SECRET_KEY` plus Ed25519 private/public PEM values. Use `patchproof doctor --production` on the deployment host to verify Docker, services, release metadata, and signing-key configuration.
 
 ## Security Notes
 

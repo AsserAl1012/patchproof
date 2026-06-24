@@ -11,9 +11,10 @@ npm test
 npm run smoke
 npm run integration:services
 docker compose config
+node bin/patchproof.js doctor --production --skip-service-health
 ```
 
-`docker compose config` requires `PATCHPROOF_SECRET_KEY` to be set to at least 32 random characters. Set `PATCHPROOF_DOCKER_GID` to the host Docker socket group ID when it is not `0`.
+`docker compose config` requires `PATCHPROOF_SECRET_KEY` to be set to at least 32 random characters. Generate deployment values with `node bin/patchproof.js keygen` before local release checks or `npx patchproof keygen` after publishing. Set `PATCHPROOF_DOCKER_GID` to the host Docker socket group ID when it is not `0`.
 
 2. Verify package contents:
 
@@ -51,11 +52,11 @@ The release workflow publishes with npm provenance when a version tag is pushed.
 5. Tag a release:
 
 ```powershell
-git tag v0.4.1
-git push origin v0.4.1
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-The tag must match `package.json` exactly. For `0.4.1`, use `v0.4.1`.
+The tag must match `package.json` exactly. For `1.0.0`, use `v1.0.0`.
 
 6. Manual publish fallback when the workflow is not used:
 
@@ -73,7 +74,7 @@ npx patchproof version
 Use the action with an immutable version tag:
 
 ```yaml
-- uses: AsserAl1012/patchproof@v0.4.1
+- uses: AsserAl1012/patchproof@v1.0.0
   with:
     certificate: certificate.json
 ```
@@ -117,10 +118,15 @@ Avoid claiming:
 - `patchproof retention --dry-run` reports retention work.
 - GHCR image is published and signed with cosign on tag releases.
 - Signed certificate verification is tested when Ed25519 keys are configured.
+- `patchproof keygen` emits usable production secret/signing values.
+- `patchproof doctor --production` passes on the target self-hosted environment.
+- `patchproof reconcile --stale-minutes 30 --apply` is documented for stale job cleanup.
+- `/api/v1/openapi.json` is reachable and describes the stable v1 API.
+- Queued/running runs can be cancelled through the dashboard or `POST /api/v1/runs/:id/cancel`.
 
 ## Roadmap After Release
 
 1. Multi-file repository repair adapters.
 2. Full Jest/Vitest/pytest execution and coverage adapters.
-3. gVisor/Firecracker runner hardening.
-4. Hosted version after sandbox review.
+3. gVisor/Firecracker runner hardening for public hostile workloads.
+4. Hosted version after independent sandbox review.

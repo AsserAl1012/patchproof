@@ -19,7 +19,7 @@ Status reviewed against source and configuration on 2026-06-24.
 - Non-root Docker runners can be given the mounted socket's supplemental group ID.
 - Queued runner failure handling preserves the original error and marks the payload run failed even when run-detail lookup fails.
 - Queued runners default to Docker isolation; the local inline demo path explicitly opts into process isolation.
-- The default Docker runner image tag, package version, and health endpoint version are aligned at `0.4.1`.
+- The default Docker runner image tag, package version, and health endpoint version are aligned at `1.0.0`.
 - Session bearer tokens are stored as server-side hashes in JSON and Postgres stores.
 - Browser SaaS sessions use same-origin `HttpOnly` `SameSite=Strict` cookies while API keys still support bearer-token automation.
 - Browser-worker verification has been removed; UI runs go through the server/CLI isolated runners.
@@ -35,8 +35,13 @@ Status reviewed against source and configuration on 2026-06-24.
 - Docker runner supports hardened runtime selection through `PATCHPROOF_DOCKER_RUNTIME=runsc` or `kata` on hosts that provide those runtimes.
 - Release workflow now builds the Docker image, creates npm package artifacts, generates SBOM/checksums, uploads release artifacts, publishes/signs a GHCR OCI image on tag releases, and publishes npm with provenance when configured.
 - A security review handoff package is available in `docs/SECURITY_REVIEW_PACKAGE.md`.
+- `patchproof keygen` generates production encryption and Ed25519 certificate signing values.
+- `patchproof doctor --production` validates release metadata, Docker, runner image, hardened runtime availability, production secrets, Postgres, Redis, S3/MinIO, and signing-key configuration.
+- Queued/running runs can be cancelled through the dashboard and `POST /api/v1/runs/:id/cancel`.
+- `patchproof reconcile` and `POST /api/v1/admin/reconcile` plan/apply stale-running-job cleanup after runner crashes.
+- The HTTP API is versioned under `/api/v1` and publishes OpenAPI metadata at `/api/v1/openapi.json`.
 
-## P0 Before Public Production
+## P0 Before Public Hosted Production
 
 - Do not expose anonymous `POST /api/run` as a hostile multi-tenant service. Complete an independent sandbox review and move public execution to gVisor, Kata, or microVM isolation.
 - Run the service-backed integration job on every protected branch and release tag; monitor flakes before public launch.
@@ -47,7 +52,6 @@ Status reviewed against source and configuration on 2026-06-24.
 
 ## P1 Product Reliability
 
-- Add job cancellation, retry visibility, and stale-run reconciliation.
 - Add user invitations, password reset, session revocation, and optional OIDC/SAML/MFA.
 - Schedule retention workers in deployment environments and test deletion against production object storage.
 - Test backup and restore procedures with real Postgres and object storage data.
@@ -58,7 +62,6 @@ Status reviewed against source and configuration on 2026-06-24.
 
 ## P1 Release Engineering
 
-- Align git tags/release notes with the `0.4.1` package, Docker/Helm image tags, and certificate verifier version.
 - Add multi-architecture OCI images if needed for ARM runner hosts.
 - Add dependency update automation, secret scanning, CodeQL/SAST, container scanning, and license checks.
 - Publish immutable container tags and digests; do not deploy mutable local build tags in production.
@@ -69,9 +72,8 @@ Status reviewed against source and configuration on 2026-06-24.
 - Replace the simple source-token denylist with a stronger parser-based policy and hardened execution boundary.
 - Broaden Python beyond standalone restricted functions only after dependency isolation and full pytest execution adapters exist. TypeScript repository targets are normalized into JavaScript verifier input for function-level targets; a native TypeScript verifier remains future work.
 - Add coverage feedback and pluggable mutation engines for broader assurance beyond the current deterministic property cases and token-aware mutation.
-- Version the HTTP API and publish an OpenAPI specification.
 - Add billing/quotas only after job accounting and abuse controls are reliable.
 
 ## Current Publish Position
 
-The npm CLI and private self-hosted beta are publishable with explicit bounded-evidence and function-level JavaScript/Python limitations. A public multi-tenant SaaS should not launch until the P0 isolation review, secret management, certificate-key operations, and external security-review items are complete.
+PatchProof is publishable as a self-hosted v1 system for private deployments with explicit bounded-evidence and function-level JavaScript/Python limitations. Public hostile multi-tenant hosting remains blocked on the P0 external sandbox and tenant-isolation review.

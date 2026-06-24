@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     memoryMb: 2048,
     cpus: 2,
     network: "disabled",
-    image: "patchproof:0.4.1"
+    image: "patchproof:1.0.0"
   },
   retention: {
     artifactDays: 30,
@@ -327,13 +327,18 @@ export class JsonSaasStore {
     await this.load();
     const job = this.state.jobs.find((item) => item.id === jobId);
     if (!job) throw notFound("Job");
+    const run = this.state.runs.find((item) => item.id === job.runId);
+    if (run?.status === "cancelled") {
+      const error = new Error("Run was cancelled.");
+      error.statusCode = 409;
+      throw error;
+    }
     job.status = "running";
     job.phase = phase;
     job.runnerId = runnerId;
     job.claimedBy = runnerId;
     job.startedAt ||= nowIso();
     job.attempt = Number(job.attempt || 0) + 1;
-    const run = this.state.runs.find((item) => item.id === job.runId);
     if (run) {
       run.status = "running";
       run.updatedAt = nowIso();
@@ -394,6 +399,11 @@ export class JsonSaasStore {
     await this.load();
     const run = this.state.runs.find((item) => item.id === runId);
     if (!run) throw notFound("Run");
+    if (run.status === "cancelled") {
+      const error = new Error("Run was cancelled.");
+      error.statusCode = 409;
+      throw error;
+    }
     run.status = status || certificate?.status || "completed";
     run.evidenceScore = certificate?.selectedPatch?.evidenceScore || 0;
     run.updatedAt = nowIso();
@@ -469,6 +479,74 @@ export class JsonSaasStore {
     this.addAuditEvent({ orgId: run.orgId, actorUserId: run.actorUserId, action: "run.failed", targetType: "run", targetId: run.id });
     await this.save();
     return run;
+  }
+
+  async cancelRun({ runId, actorUserId = null, message = "Run cancelled by request." }) {
+    await this.load();
+    const run = this.state.runs.find((item) => item.id === runId);
+    if (!run) throw notFound("Run");
+    if (isTerminalRunStatus(run.status) && run.status !== "cancelled") {
+      const error = new Error(`Run is already ${run.status} and cannot be cancelled.`);
+      error.statusCode = 409;
+      throw error;
+    }
+    const now = nowIso();
+    run.status = "cancelled";
+    run.phase = "cancelled";
+    run.error = message;
+    run.updatedAt = now;
+    const job = this.state.jobs.find((item) => item.runId === runId);
+    if (job) {
+      job.status = "cancelled";
+      job.phase = "cancelled";
+      job.completedAt = job.completedAt || now;
+      job.exitReason = message;
+      job.logs = [...(job.logs || []), message];
+    }
+    const attempt = this.state.jobAttempts.find((item) => item.runId === runId && !item.completedAt);
+    if (attempt) {
+      attempt.status = "cancelled";
+      attempt.completedAt = now;
+      attempt.exitReason = message;
+    }
+    this.addAuditEvent({
+      orgId: run.orgId,
+      actorUserId: actorUserId || run.actorUserId,
+      action: "run.cancelled",
+      targetType: "run",
+      targetId: run.id,
+      metadata: { message }
+    });
+    await this.save();
+    return { run, job };
+  }
+
+  async reconcileStaleRuns({ staleAfterMs = defaultStaleRunMs(), dryRun = false, now = new Date() } = {}) {
+    await this.load();
+    const cutoff = now.getTime() - Math.max(1, Number(staleAfterMs));
+    const staleJobs = this.state.jobs.filter((job) => {
+      if (job.status !== "running") return false;
+      const run = this.state.runs.find((item) => item.id === job.runId);
+      if (!run || isTerminalRunStatus(run.status)) return false;
+      const reference = Date.parse(job.startedAt || run.updatedAt || job.createdAt || "");
+      return Number.isFinite(reference) && reference < cutoff;
+    });
+    const staleRuns = staleJobs.map((job) => ({
+      runId: job.runId,
+      jobId: job.id,
+      runnerId: job.runnerId,
+      status: job.status,
+      phase: job.phase,
+      startedAt: job.startedAt,
+      ageMs: now.getTime() - Date.parse(job.startedAt || job.createdAt)
+    }));
+    if (dryRun) return { dryRun: true, staleRuns, reconciled: 0 };
+
+    const message = `Run reconciled as stale after ${Math.round(Math.max(1, Number(staleAfterMs)) / 60000)} minute(s).`;
+    for (const item of staleRuns) {
+      await this.failRun({ runId: item.runId, message, logs: [message] });
+    }
+    return { dryRun: false, staleRuns, reconciled: staleRuns.length };
   }
 
   async listRuns(orgId, projectId = null) {
@@ -605,6 +683,7 @@ export class JsonSaasStore {
       runsCertified: runs.filter((run) => run.status === "certified").length,
       runsRejected: runs.filter((run) => run.status === "rejected").length,
       runsFailed: runs.filter((run) => run.status === "failed").length,
+      runsCancelled: runs.filter((run) => run.status === "cancelled").length,
       queueDepth: this.state.jobs.filter((job) => job.status === "queued").length,
       runnerCount: this.state.runnerHeartbeats.filter((runner) => Date.now() - new Date(runner.lastSeenAt).getTime() < 120000).length || 1,
       auditEvents: this.state.auditEvents.length
@@ -727,6 +806,14 @@ function id(prefix) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function defaultStaleRunMs() {
+  return Number(process.env.PATCHPROOF_STALE_RUN_MS || 30 * 60 * 1000);
+}
+
+function isTerminalRunStatus(status) {
+  return ["certified", "rejected", "failed", "completed", "cancelled"].includes(String(status || ""));
 }
 
 function sha256(value) {

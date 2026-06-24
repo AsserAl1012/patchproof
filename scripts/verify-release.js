@@ -16,7 +16,7 @@ const checks = [
   },
   {
     file: "server.js",
-    pattern: new RegExp(`version:\\s*"${escapeRegex(version)}"`)
+    pattern: new RegExp(`version:\\s*(?:"${escapeRegex(version)}"|PATCHPROOF_VERSION)`)
   },
   {
     file: "compose.yml",
