@@ -44,6 +44,8 @@ try {
     await doctorCommand(args.slice(1));
   } else if (command === "inspect") {
     await inspectCommand(args.slice(1));
+  } else if (command === "detect") {
+    await detectCommand(args.slice(1));
   } else if (command === "targets") {
     await targetsCommand(args.slice(1));
   } else if (command === "test") {
@@ -383,6 +385,34 @@ async function inspectCommand(inspectArgs) {
   printInspectReport(report);
 }
 
+async function detectCommand(detectArgs) {
+  const repoRoot = readOption(detectArgs, "--repo");
+  const configPath = readOption(detectArgs, "--config");
+  const command = readOption(detectArgs, "--command");
+  const timeoutSeconds = readOption(detectArgs, "--timeout-seconds");
+  const maxFiles = readOption(detectArgs, "--max-files");
+  const maxScanFiles = readOption(detectArgs, "--max-scan-files");
+  const jsonMode = detectArgs.includes("--json");
+  const runTests = detectArgs.includes("--run-tests");
+  const { detectRepositoryBugs } = await import("../repository-adapter.js");
+  const report = await detectRepositoryBugs({
+    repoRoot,
+    configPath,
+    command,
+    runTests,
+    timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
+    maxFiles: maxFiles ? Number(maxFiles) : undefined,
+    maxScanFiles: maxScanFiles ? Number(maxScanFiles) : undefined
+  });
+  if (jsonMode) {
+    console.log(JSON.stringify(report, null, 2));
+    if (["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
+    return;
+  }
+  printDetectReport(report);
+  if (["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
+}
+
 async function applyCommand(applyArgs) {
   const repoRoot = readOption(applyArgs, "--repo");
   const configPath = readOption(applyArgs, "--config");
@@ -535,6 +565,7 @@ async function inputFromFile(filePath) {
   const raw = JSON.parse(await readFile(filePath, "utf8"));
   return {
     language: raw.language || "javascript",
+    functionName: raw.functionName || raw.target?.function || raw.repository?.function || "",
     source: raw.source,
     testsText: raw.testsText || JSON.stringify(raw.tests || [], null, 2),
     bugReport: raw.bugReport || "",
@@ -734,6 +765,7 @@ Usage:
   patchproof doctor [--repo .] [--config patchproof.yml] [--json]
   patchproof doctor --production [--skip-service-health] [--json]
   patchproof inspect [--repo .] [--config patchproof.yml] [--json]
+  patchproof detect [--repo .] [--config patchproof.yml] [--run-tests] [--command "npm test"] [--json]
   patchproof targets [--repo .] [--config patchproof.yml] [--json]
   patchproof test [--repo .] [--config patchproof.yml] [--target <id>] [--command "npm test"] [--timeout-seconds 600] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]
@@ -807,4 +839,33 @@ function printInspectReport(report) {
     console.log("Next:");
     for (const item of report.suggestions.next) console.log(`- ${item}`);
   }
+}
+
+function printDetectReport(report) {
+  console.log(`Repository: ${report.repoRoot}`);
+  console.log(`Detection summary: ${report.summary.totalFindings} finding(s), highest=${report.summary.highestSeverity}`);
+  console.log(`Languages: ${report.summary.languages.length ? report.summary.languages.join(", ") : "none detected"}`);
+  console.log(`Scanned source files: ${report.summary.scannedSourceFiles}/${report.summary.sourceFiles}`);
+  const counts = report.summary.bySeverity;
+  console.log(`Severity counts: critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}, info=${counts.info}`);
+  if (report.projectTest) {
+    console.log(`Project tests: ${report.projectTest.ok ? "passed" : "failed"} (${report.projectTest.command})`);
+  }
+  if (!report.findings.length) {
+    console.log("No bug signals were detected.");
+    return;
+  }
+  console.log("Findings:");
+  for (const finding of report.findings) {
+    const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""}` : "repository";
+    console.log(`- [${finding.severity}] ${location} ${finding.title}`);
+    console.log(`  ${finding.message}`);
+    if (finding.evidence) console.log(`  evidence: ${singleLine(finding.evidence)}`);
+    if (finding.suggestion) console.log(`  next: ${finding.suggestion}`);
+  }
+}
+
+function singleLine(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length <= 220 ? text : `${text.slice(0, 217)}...`;
 }

@@ -159,6 +159,23 @@ test("CLI inspects repository metadata", async () => {
   assert.ok(report.sourceFiles.includes("src/math.js"));
 });
 
+test("CLI detects repo-wide bug signals without applying repairs", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-detect-"));
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "cache.py"), `def remember(value, seen=[]):
+    seen.append(value)
+    return seen
+`, "utf8");
+
+  const result = spawnSync(node, ["bin/patchproof.js", "detect", "--repo", repo, "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 6, result.stderr || result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.summary.highestSeverity, "high");
+  assert.ok(report.findings.some((finding) => finding.title === "Mutable default argument"));
+});
+
 test("CLI initializes and doctors a repository", async () => {
   const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-init-cli-"));
   await mkdir(join(repo, "src"), { recursive: true });

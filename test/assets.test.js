@@ -10,6 +10,9 @@ test("html references production assets", async () => {
   assert.match(html, /downloadCertButton/);
   assert.match(html, /exportRunsButton/);
   assert.match(html, /importCertInput/);
+  assert.match(html, /design-examples\.html/);
+  assert.match(html, /Private Workspace/);
+  assert.match(html, /Admin actions/);
 });
 
 test("browser worker execution is disabled", async () => {
@@ -24,6 +27,16 @@ test("app binds saved-run controls", async () => {
   assert.match(app, /historyList: document\.querySelector\("#historyList"\)/);
   assert.match(app, /exportRunsButton/);
   assert.match(app, /importCertificate/);
+  assert.match(app, /loadInvitations/);
+  assert.match(app, /createPasswordReset/);
+});
+
+test("design examples page offers product layout directions", async () => {
+  const examples = await readFile("design-examples.html", "utf8");
+  assert.match(examples, /Operator Console/);
+  assert.match(examples, /Solo Developer Flow/);
+  assert.match(examples, /Certificate Review/);
+  assert.match(examples, /Back to app/);
 });
 
 test("public package assets exist", async () => {
@@ -35,6 +48,7 @@ test("public package assets exist", async () => {
   const chart = await readFile("helm/patchproof/Chart.yaml", "utf8");
   const runnerChart = await readFile("helm/patchproof/templates/runner-deployment.yaml", "utf8");
   const config = await readFile("patchproof.yml", "utf8");
+  const packageJson = await readFile("package.json", "utf8");
   assert.match(action, /PatchProof Verify/);
   assert.match(inputExample, /clamp/);
   assert.match(pythonExample, /"language": "python"/);
@@ -43,4 +57,5 @@ test("public package assets exist", async () => {
   assert.match(chart, /name: patchproof/);
   assert.match(runnerChart, /patchproof-runner/);
   assert.match(config, /minEvidenceScore/);
+  assert.match(packageJson, /design-examples\.html/);
 });

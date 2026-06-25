@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   applyCertificatePatchToRepositoryTarget,
   createInputFromRepositoryTarget,
+  detectRepositoryBugs,
   doctorRepository,
   extractFrameworkTests,
   initializeRepositoryConfig,
@@ -270,6 +271,72 @@ def test_clamp():
   assert.deepEqual(extracted.map((item) => item.expect), [0, 10, 6]);
 });
 
+test("repository adapter extracts pytest boolean and raises assertions", async () => {
+  const repo = await fixtureRepo("repo-pytest-rich-");
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "tests", "test_validation.py"), `
+import pytest
+import validators
+
+@pytest.fixture
+def slug_expected():
+    return "api-client"
+
+def test_valid_slug():
+    assert validators.is_valid_slug("api-client") is True
+    assert not validators.is_valid_slug("API Client")
+    assert validators.is_valid_slug("") is False
+
+def test_positive_contract():
+    with pytest.raises(ValueError):
+        validators.require_positive(-1)
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Hello World", "hello-world"),
+    ("API Client", "api-client"),
+])
+def test_slugify(raw, expected):
+    assert validators.slugify(raw) == expected
+
+def test_slugify_fixture(slug_expected):
+    assert validators.slugify("API Client") == slug_expected
+`, "utf8");
+
+  const booleanTests = await extractFrameworkTests({
+    repoRoot: repo,
+    testPath: "tests/test_validation.py",
+    functionName: "is_valid_slug",
+    framework: "pytest"
+  });
+  assert.deepEqual(booleanTests.map((item) => item.expect), [true, false, false]);
+
+  const raisesTests = await extractFrameworkTests({
+    repoRoot: repo,
+    testPath: "tests/test_validation.py",
+    functionName: "require_positive",
+    framework: "pytest"
+  });
+  assert.deepEqual(raisesTests, [
+    {
+      name: "pytest require_positive case 1",
+      args: [-1],
+      expectError: "ValueError"
+    }
+  ]);
+
+  const parametrizedTests = await extractFrameworkTests({
+    repoRoot: repo,
+    testPath: "tests/test_validation.py",
+    functionName: "slugify",
+    framework: "pytest"
+  });
+  assert.deepEqual(parametrizedTests.map((item) => [item.args, item.expect]), [
+    [["Hello World"], "hello-world"],
+    [["API Client"], "api-client"],
+    [["API Client"], "api-client"]
+  ]);
+});
+
 test("repository init creates a starter config from checkout metadata", async () => {
   const repo = await fixtureRepo("repo-init-");
   await mkdir(join(repo, "src"), { recursive: true });
@@ -401,6 +468,44 @@ test("repository inspector detects Python pytest metadata", async () => {
   assert.ok(report.frameworks.includes("pytest"));
   assert.deepEqual(report.testCommands.map((item) => item.command), ["python -m pytest"]);
   assert.ok(report.suggestions.next.some((item) => item.includes("patchproof.yml")));
+});
+
+test("repository detector imports C/C++ repos and reports risky bug signals", async () => {
+  const repo = await fixtureRepo("detect-cpp-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "CMakeLists.txt"), `
+cmake_minimum_required(VERSION 3.20)
+project(sample)
+enable_testing()
+find_package(GTest)
+add_test(NAME sample_tests COMMAND sample_tests)
+`, "utf8");
+  await writeFile(join(repo, "src", "buffer.cpp"), `
+#include <cstdio>
+#include <cstring>
+
+void copy_name(char *dest, const char *src) {
+  strcpy(dest, src);
+}
+`, "utf8");
+  await writeFile(join(repo, "tests", "buffer_test.cpp"), `
+#include <gtest/gtest.h>
+TEST(Buffer, Copy) {
+  EXPECT_TRUE(true);
+}
+`, "utf8");
+
+  const inspection = await inspectRepository({ repoRoot: repo });
+  assert.ok(inspection.languages.includes("cpp"));
+  assert.ok(inspection.frameworks.includes("cmake"));
+  assert.ok(inspection.frameworks.includes("ctest"));
+  assert.ok(inspection.frameworks.includes("gtest"));
+  assert.ok(inspection.testCommands.some((item) => item.command.includes("ctest")));
+
+  const report = await detectRepositoryBugs({ repoRoot: repo });
+  assert.equal(report.summary.highestSeverity, "high");
+  assert.ok(report.findings.some((finding) => finding.file === "src/buffer.cpp" && finding.title === "Unbounded C string API"));
 });
 
 test("repository adapter runs configured project test commands", async () => {

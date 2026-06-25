@@ -1,7 +1,9 @@
 import ast
+import asyncio
 import copy
 import datetime
 import difflib
+import importlib
 import json
 import math
 import re
@@ -28,9 +30,12 @@ SAFE_BUILTINS = {
     "ValueError": ValueError, "TypeError": TypeError, "IndexError": IndexError,
     "KeyError": KeyError, "ZeroDivisionError": ZeroDivisionError,
 }
+SAFE_MODULES = {
+    "bisect", "collections", "decimal", "fractions", "functools", "heapq",
+    "itertools", "math", "operator", "re", "statistics", "string",
+}
 FORBIDDEN_NODES = (
-    ast.Import, ast.ImportFrom, ast.ClassDef, ast.AsyncFunctionDef, ast.Await,
-    ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith, ast.Try,
+    ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith,
     ast.Delete, ast.Yield, ast.YieldFrom, ast.Lambda,
 )
 FORBIDDEN_NAMES = {
@@ -38,6 +43,8 @@ FORBIDDEN_NAMES = {
     "getattr", "globals", "help", "input", "locals", "memoryview", "object",
     "open", "setattr", "super", "type", "vars",
 }
+SAFE_BUILTINS["__build_class__"] = __build_class__
+SAFE_BUILTINS["__import__"] = None
 
 PYTHON_TEMPLATES = [
     ("upper-bound-variable", "Replace lower-bound variable in upper-bound check", ["local-branch-change", "range-boundary"], [(r">\s*min\b", "> max")]),
@@ -45,6 +52,7 @@ PYTHON_TEMPLATES = [
     ("range-len-off-by-one", "Include the final item in len-based range iteration", ["boundary-change", "collection-iteration"], [(r"range\(\s*len\(([^)]+)\)\s*-\s*1\s*\)", r"range(len(\1))")]),
     ("collapse-whitespace-slug", "Collapse every whitespace run before joining with dashes", ["string-normalization", "whitespace-change"], [(r"return\s+([A-Za-z_]\w*)\.replace\([\"'] [\"'],\s*[\"']-[\"']\)", "return \"-\".join(\\1.split())")]),
     ("append-return-list", "Return the list after append instead of append's None result", ["mutation-visible", "collection-return"], [(r"^(\s*)return\s+([A-Za-z_]\w*)\.append\(([^)]*)\)\s*$", r"\1\2.append(\3)\n\1return \2")]),
+    ("raise-value-error-negative", "Raise ValueError instead of returning None for negative input", ["exception-contract", "input-validation"], [(r"if\s+([A-Za-z_]\w*)\s*<\s*0:\n(\s*)return\s+None", r"if \1 < 0:\n\2raise ValueError('negative')")]),
     ("missing-increment", "Add missing increment to returned value", ["arithmetic-change"], [(r"return\s+value\s*$", "return value + 1")]),
 ]
 
@@ -79,7 +87,7 @@ def run_patchproof(raw):
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     data = normalize_input(raw)
     tests = parse_tests(data["testsText"], data["limits"])
-    old_program = compile_function(data["source"])
+    old_program = compile_function(data["source"], data["functionName"])
     precondition = compile_predicate(data["preconditionText"], True, "precondition")
     may_change = compile_predicate(data["mayChangeText"], False, "may-change predicate")
     postcondition = compile_predicate(data["postconditionText"], True, "postcondition")
@@ -138,6 +146,7 @@ def normalize_input(raw):
         })
     return {
         "language": "python",
+        "functionName": str(raw.get("functionName") or raw.get("target", {}).get("function") or raw.get("repository", {}).get("function") or ""),
         "source": source,
         "testsText": str(raw.get("testsText") or json.dumps(raw.get("tests") or [])),
         "bugReport": str(raw.get("bugReport") or ""),
@@ -174,18 +183,50 @@ def parse_tests(text, limits):
     return tests
 
 
-def validate_ast(tree, label, function_mode=False):
+def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0:
+        raise ImportError("relative imports are not allowed")
+    root = str(name).split(".")[0]
+    if root not in SAFE_MODULES:
+        raise ImportError(f"module '{name}' is not allowed")
+    return importlib.import_module(name)
+
+
+SAFE_BUILTINS["__import__"] = safe_import
+
+
+def validate_ast(tree, label, function_mode=False, target_name=""):
     if function_mode:
         body = tree.body
-        functions = [node for node in body if isinstance(node, ast.FunctionDef)]
-        other = [node for node in body if not isinstance(node, ast.FunctionDef) and not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str))]
-        if len(functions) != 1 or other:
-            raise ValueError("Python source must contain exactly one named function and no top-level executable statements.")
-        if functions[0].decorator_list:
-            raise ValueError("Python function decorators are not allowed.")
+        functions = [node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        targets = [node for node in functions if not target_name or node.name == target_name]
+        other = [node for node in body if not allowed_top_level_node(node)]
+        if not targets:
+            expected = f" named '{target_name}'" if target_name else ""
+            raise ValueError(f"Python source must contain a target function{expected}.")
+        if not target_name and len(functions) != 1:
+            raise ValueError("Python source with multiple functions must set functionName.")
+        if other:
+            raise ValueError("Python source may only contain safe imports, literal constants, helper classes, and function definitions.")
+        for function in functions:
+            if function.decorator_list:
+                raise ValueError("Python function decorators are not allowed.")
+        for item in [node for node in body if isinstance(node, ast.ClassDef)]:
+            if item.decorator_list:
+                raise ValueError("Python class decorators are not allowed.")
+            if item.bases or item.keywords:
+                raise ValueError("Python helper classes cannot inherit or pass metaclass keywords.")
+    else:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.AsyncFunctionDef, ast.Await)):
+                raise ValueError(f"Unsafe {label}: {type(node).__name__} is not allowed.")
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.decorator_list:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
             raise ValueError("Python function decorators are not allowed.")
+        if isinstance(node, ast.ClassDef) and node.decorator_list:
+            raise ValueError("Python class decorators are not allowed.")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            validate_import(node, label)
         if isinstance(node, FORBIDDEN_NODES):
             raise ValueError(f"Unsafe {label}: {type(node).__name__} is not allowed.")
         if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
@@ -194,14 +235,54 @@ def validate_ast(tree, label, function_mode=False):
             raise ValueError(f"Unsafe {label}: private/dunder attributes are not allowed.")
 
 
-def compile_function(source):
+def allowed_top_level_node(node):
+    if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return True
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        return True
+    if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) and target.id.isupper() for target in node.targets):
+        return literal_ast_value(node.value)
+    return False
+
+
+def literal_ast_value(node):
+    try:
+        ast.literal_eval(node)
+        return True
+    except Exception:
+        return False
+
+
+def validate_import(node, label):
+    module_names = []
+    aliases = []
+    if isinstance(node, ast.Import):
+        module_names = [alias.name for alias in node.names]
+        aliases = node.names
+    else:
+        if node.level:
+            raise ValueError(f"Unsafe {label}: relative imports are not allowed.")
+        module_names = [node.module or ""]
+        aliases = node.names
+    for module in module_names:
+        root = module.split(".")[0]
+        if root not in SAFE_MODULES:
+            raise ValueError(f"Unsafe {label}: import '{module}' is not allowed.")
+    for alias in aliases:
+        visible = alias.asname or alias.name.split(".")[0]
+        if visible in FORBIDDEN_NAMES or visible.startswith("_"):
+            raise ValueError(f"Unsafe {label}: import alias '{visible}' is not allowed.")
+
+
+def compile_function(source, function_name=""):
     try:
         tree = ast.parse(source, mode="exec")
     except SyntaxError as error:
         raise ValueError(f"Could not compile Python function: {error.msg} at line {error.lineno}")
-    validate_ast(tree, "source", True)
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
-    namespace = {"__builtins__": SAFE_BUILTINS}
+    validate_ast(tree, "source", True, function_name)
+    functions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    function = next(node for node in functions if not function_name or node.name == function_name)
+    namespace = {"__builtins__": SAFE_BUILTINS, "__name__": "__patchproof__"}
     exec(compile(tree, "<patchproof-python>", "exec"), namespace, namespace)
     return {"name": function.name, "fn": namespace[function.name], "source": source}
 
@@ -256,7 +337,7 @@ def validate_candidate(candidate, old_program, tests, failing_names, may_change,
     result = dict(candidate)
     result.update({"accepted": False, "evidenceScore": 0, "explicitTests": None, "preservation": None, "postcondition": None, "boundedProof": None, "mutation": None, "compileError": None, "fixedBug": False, "fixedFailingTests": [], "rejectionReasons": []})
     try:
-        new_program = compile_function(candidate["source"])
+        new_program = compile_function(candidate["source"], old_program["name"])
     except Exception as error:
         result["compileError"] = str(error)
         result["rejectionReasons"].append("Candidate did not compile as a safe named function.")
@@ -268,7 +349,7 @@ def validate_candidate(candidate, old_program, tests, failing_names, may_change,
     explicit = run_tests(new_program["fn"], tests)
     preservation = check_preservation(old_program["fn"], new_program["fn"], domain, may_change, limits["maxCounterexamples"])
     post = check_postcondition(new_program["fn"], domain, postcondition, limits["maxCounterexamples"])
-    mutation = mutation_check(candidate["source"], tests, domain, may_change, postcondition, limits["maxCounterexamples"])
+    mutation = mutation_check(candidate["source"], tests, domain, may_change, postcondition, limits["maxCounterexamples"], old_program["name"])
     result.update({"explicitTests": explicit, "preservation": preservation, "postcondition": post, "mutation": mutation})
     result["boundedProof"] = {
         "status": "no-counterexample-in-finite-envelope" if not preservation["counterexamples"] and not post["counterexamples"] else "counterexample-found",
@@ -298,6 +379,8 @@ def observe(fn, args):
     before = copy.deepcopy(cloned)
     try:
         value = fn(*cloned)
+        if asyncio.iscoroutine(value):
+            value = asyncio.run(value)
         return {"ok": True, "value": normalize_value(value), "mutatedArgs": normalize_value(cloned) if cloned != before else None}
     except Exception as error:
         return {"ok": False, "error": f"{type(error).__name__}: {error}", "mutatedArgs": None}
@@ -354,7 +437,7 @@ def check_postcondition(fn, domain, predicate, maximum):
     return {"checked": checked, "counterexamples": counterexamples}
 
 
-def mutation_check(source, tests, domain, may_change, postcondition, maximum):
+def mutation_check(source, tests, domain, may_change, postcondition, maximum, function_name=""):
     replacements = [(r">=", ">"), (r">", ">="), (r"<=", "<"), (r"<", "<="), (r"\+\s*1", "- 1"), (r"-\s*1", "+ 1"), (r"return\s+max\b", "return min"), (r"return\s+min\b", "return max"), (r"\[:\s*limit\s*\]", "[:limit - 1]")]
     mutants, seen = [], set()
     for pattern, replacement in replacements:
@@ -365,11 +448,11 @@ def mutation_check(source, tests, domain, may_change, postcondition, maximum):
     mutants = mutants[:8]
     if not mutants:
         return {"total": 0, "killed": 0, "score": 0.5, "survivors": [], "note": "No simple source mutants could be generated."}
-    original = compile_function(source)["fn"]
+    original = compile_function(source, function_name)["fn"]
     killed, survivors = 0, []
     for mutant in mutants:
         try:
-            fn = compile_function(mutant["source"])["fn"]
+            fn = compile_function(mutant["source"], function_name)["fn"]
         except Exception:
             killed += 1
             continue
@@ -406,10 +489,14 @@ def values_for_index(tests, index):
         for value in [-10, -5, -1, 0, 1, 2, 3, 5, 6, 9, 10, 11, 12, 20]: push_unique(values, value)
         for value in observed:
             if isinstance(value, (int, float)) and not isinstance(value, bool): push_unique(values, value - 1); push_unique(values, value + 1)
+    if any(isinstance(value, bool) for value in observed):
+        push_unique(values, False); push_unique(values, True)
     if any(isinstance(value, str) for value in observed):
         for value in ["", " ", "Hello", "Hello World", "Hello   World", "  API Client  ", "red blue green", "Already-Ok", "tabs\tand spaces", "MiXeD Case"]: push_unique(values, value)
     if any(isinstance(value, list) for value in observed):
         for value in [[], [1], [1, 2], [1, 2, 3], [0, 0, 0], ["a", "b", "c"]]: push_unique(values, value)
+    if any(isinstance(value, dict) for value in observed):
+        for value in [{}, {"value": 0}, {"value": 1}, {"enabled": True}, {"name": "PatchProof"}, {"items": [1, 2]}]: push_unique(values, value)
     return values[:18]
 
 
@@ -431,7 +518,7 @@ def build_certificate(data, started_at, old_program, baseline, bug_tests, passin
     if not selected.get("boundedProof") or selected["boundedProof"]["status"] != "no-counterexample-in-finite-envelope": residual.append("Selected patch has at least one bounded counterexample.")
     mutation = selected.get("mutation") or {}
     if mutation.get("survivors"): residual.append(f"{len(mutation['survivors'])} simple patch mutants survived validation.")
-    replay_input = {key: data[key] for key in ("language", "source", "testsText", "bugReport", "preconditionText", "mayChangeText", "postconditionText", "executionMode", "candidatePatches", "modelProvenance", "limits")}
+    replay_input = {key: data[key] for key in ("language", "functionName", "source", "testsText", "bugReport", "preconditionText", "mayChangeText", "postconditionText", "executionMode", "candidatePatches", "modelProvenance", "limits")}
     run_id = fnv_hash(json.dumps(replay_input, sort_keys=True, separators=(",", ":")))
     validation = {"compileError": selected["compileError"]} if not selected.get("explicitTests") else {
         "explicitTests": {"passed": selected["explicitTests"]["passCount"], "failed": selected["explicitTests"]["failCount"], "total": len(selected["explicitTests"]["tests"]), "fixedFailingTests": selected["fixedFailingTests"]},

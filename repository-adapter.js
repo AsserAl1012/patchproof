@@ -58,6 +58,10 @@ export async function inspectRepository(options = {}) {
   const pytestIni = await readTextIfExists(repoRoot, "pytest.ini");
   const setupCfg = await readTextIfExists(repoRoot, "setup.cfg");
   const requirements = await readTextIfExists(repoRoot, "requirements.txt");
+  const cmakeLists = await readTextIfExists(repoRoot, "CMakeLists.txt");
+  const makefile = await readTextIfExists(repoRoot, "Makefile") || await readTextIfExists(repoRoot, "makefile");
+  const conanfile = await readTextIfExists(repoRoot, "conanfile.txt") || await readTextIfExists(repoRoot, "conanfile.py");
+  const vcpkg = await readTextIfExists(repoRoot, "vcpkg.json");
   const patchproofConfigText = await readTextIfExists(repoRoot, configPath);
   const patchproof = patchproofConfigText
     ? summarizePatchproofConfig(patchproofConfigText, configPath)
@@ -66,7 +70,7 @@ export async function inspectRepository(options = {}) {
   const testFiles = files.filter(isTestFile);
   const patchproofTestFiles = testFiles.filter((file) => file.endsWith(".patchproof.json"));
   const packageManager = detectPackageManager(files);
-  const frameworks = detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, testFiles });
+  const frameworks = detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, cmakeLists, makefile, conanfile, vcpkg, testFiles, files });
   const languages = detectLanguages({ files, packageJson, pyproject });
   const testCommands = detectTestCommands({ packageJson, frameworks });
   const frameworkAdapters = detectFrameworkAdapters({ frameworks, testFiles });
@@ -164,6 +168,103 @@ export async function doctorRepository(options = {}) {
   return { overall, report, checks };
 }
 
+export async function detectRepositoryBugs(options = {}) {
+  const repoRoot = resolve(options.repoRoot || process.cwd());
+  const configPath = options.configPath || "patchproof.yml";
+  const maxFiles = Number(options.maxFiles || 5000);
+  const maxScanFiles = Number(options.maxScanFiles || 400);
+  const maxTargets = Number(options.maxTargets || 20);
+  const report = await inspectRepository({ repoRoot, configPath, maxFiles });
+  const files = await listRepositoryFiles(repoRoot, maxFiles);
+  const sourceFiles = files.filter(isSourceFile);
+  const findings = [];
+  const scannedSourceFiles = sourceFiles.slice(0, maxScanFiles);
+
+  if (sourceFiles.length > scannedSourceFiles.length) {
+    findings.push(repositoryFinding({
+      severity: "info",
+      category: "scan-limit",
+      title: "Source scan was capped",
+      message: `Scanned ${scannedSourceFiles.length} of ${sourceFiles.length} source files. Increase --max-scan-files for a wider pass.`
+    }));
+  }
+
+  for (const file of scannedSourceFiles) {
+    const text = await readTextIfExists(repoRoot, file);
+    if (text === null) continue;
+    findings.push(...scanSourceForBugSignals(file, text));
+  }
+
+  if (!report.patchproof.configured) {
+    findings.push(repositoryFinding({
+      severity: "medium",
+      category: "configuration",
+      title: "PatchProof config is missing",
+      message: "No patchproof.yml was found, so configured target validation could not run.",
+      suggestion: "Run `patchproof init --repo <path>` to generate a starter configuration."
+    }));
+  } else if (report.patchproof.error) {
+    findings.push(repositoryFinding({
+      severity: "high",
+      category: "configuration",
+      title: "PatchProof config is invalid",
+      message: report.patchproof.error,
+      suggestion: "Fix patchproof.yml before running target-level detection."
+    }));
+  } else {
+    findings.push(...await detectConfiguredTargetFailures({ repoRoot, configPath, maxTargets }));
+  }
+
+  let projectTest = null;
+  if (options.runTests) {
+    try {
+      projectTest = await runRepositoryTestCommand({
+        repoRoot,
+        configPath,
+        command: options.command,
+        timeoutSeconds: options.timeoutSeconds,
+        maxBuffer: options.maxBuffer
+      });
+      if (!projectTest.ok) {
+        findings.push(repositoryFinding({
+          severity: "high",
+          category: "project-tests",
+          title: "Repository test command failed",
+          message: `${projectTest.command} exited with status ${projectTest.status ?? "unknown"}.`,
+          evidence: summarizeProcessOutput(projectTest),
+          suggestion: "Open the failing test output and map the affected function into a PatchProof target."
+        }));
+      }
+    } catch (error) {
+      findings.push(repositoryFinding({
+        severity: "medium",
+        category: "project-tests",
+        title: "Repository test command could not run",
+        message: error.message,
+        suggestion: "Configure project.testCommand in patchproof.yml or pass --command."
+      }));
+    }
+  }
+
+  const summary = summarizeFindings(findings);
+  return {
+    repoRoot,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      ...summary,
+      languages: report.languages,
+      frameworks: report.frameworks,
+      sourceFiles: sourceFiles.length,
+      scannedSourceFiles: scannedSourceFiles.length,
+      testFiles: files.filter(isTestFile).length,
+      configuredTargets: report.patchproof.targets.length
+    },
+    findings,
+    inspection: report,
+    projectTest
+  };
+}
+
 export async function extractFrameworkTests(options = {}) {
   const repoRoot = resolve(options.repoRoot || process.cwd());
   const testPath = options.testPath || options.frameworkTests || options.projectTests;
@@ -188,7 +289,11 @@ export async function createInputFromRepositoryTarget(options = {}) {
   const targetId = selectTargetId(targets, options.targetId);
   const target = targets[targetId];
   const configuredLanguage = String(target.language || config.project.language || "javascript").toLowerCase();
-  const language = configuredLanguage === "typescript" ? "javascript" : languageOf({ language: configuredLanguage });
+  const repositoryLanguage = normalizeRepositoryLanguage(configuredLanguage);
+  if (["c", "cpp"].includes(repositoryLanguage)) {
+    throw new Error("C/C++ repository targets are available for inspection and detection, but repair/certification is not implemented yet.");
+  }
+  const language = repositoryLanguage === "typescript" ? "javascript" : languageOf({ language: repositoryLanguage });
 
   const sourcePath = target.source || target.sourcePath || target.file;
   const testsPath = target.tests || target.testsPath || (String(target.testFile || "").endsWith(".patchproof.json") ? target.testFile : "");
@@ -219,6 +324,7 @@ export async function createInputFromRepositoryTarget(options = {}) {
 
   return {
     language,
+    functionName: functionName || inferredFunctionName(language, source),
     source,
     testsText: tests,
     bugReport: target.bugReport || target.bug || "",
@@ -251,7 +357,11 @@ export async function applyCertificatePatchToRepositoryTarget(options = {}) {
   const targetId = selectTargetId(targets, options.targetId || certificate.replay?.input?.repository?.target);
   const target = targets[targetId];
   const configuredLanguage = String(target.language || config.project.language || certificate.target?.language || "javascript").toLowerCase();
-  const language = configuredLanguage === "typescript" ? "javascript" : languageOf({ language: configuredLanguage });
+  const repositoryLanguage = normalizeRepositoryLanguage(configuredLanguage);
+  if (["c", "cpp"].includes(repositoryLanguage)) {
+    throw new Error("C/C++ repository targets are available for inspection and detection, but patch application is not implemented yet.");
+  }
+  const language = repositoryLanguage === "typescript" ? "javascript" : languageOf({ language: repositoryLanguage });
   const sourcePath = target.source || target.sourcePath || target.file;
   if (!sourcePath) throw new Error(`Repository target '${targetId}' is missing source.`);
   assertAllowedTargetPath(config, repoRoot, sourcePath, "source");
@@ -443,6 +553,7 @@ async function buildInitialConfigText(repoRoot, report) {
 }
 
 async function suggestInitialTargets(repoRoot, report, language) {
+  if (!["javascript", "typescript", "python"].includes(language)) return [];
   const sourceByStem = new Map(report.sourceFiles.map((file) => [basename(file).replace(/\.[^.]+$/, ""), file]));
   const targets = [];
   for (const tests of report.patchproofTestFiles) {
@@ -469,6 +580,7 @@ async function suggestInitialTargets(repoRoot, report, language) {
 }
 
 async function inferSingleFunctionName(repoRoot, sourcePath, language) {
+  if (!["javascript", "typescript", "python"].includes(language)) return "";
   try {
     const text = await readFile(resolveRepoPath(repoRoot, sourcePath, "source"), "utf8");
     const matches = language === "python"
@@ -482,6 +594,8 @@ async function inferSingleFunctionName(repoRoot, sourcePath, language) {
 
 function preferredLanguage(languages) {
   if (languages.includes("python") && !languages.includes("javascript")) return "python";
+  if (languages.includes("cpp") && !languages.some((language) => ["javascript", "python"].includes(language))) return "cpp";
+  if (languages.includes("c") && !languages.some((language) => ["javascript", "python", "cpp"].includes(language))) return "c";
   return languages.includes("javascript") ? "javascript" : languages[0] || "javascript";
 }
 
@@ -500,6 +614,10 @@ function installCommandFor(packageManager, language) {
   if (packageManager === "npm") return "npm ci";
   if (packageManager === "poetry") return "poetry install";
   if (packageManager === "uv") return "uv sync";
+  if (packageManager === "cmake") return "cmake -S . -B build";
+  if (packageManager === "make") return "make";
+  if (packageManager === "conan") return "conan install .";
+  if (packageManager === "vcpkg") return "vcpkg install";
   return language === "python" ? "python -m pip install -r requirements.txt" : "npm install";
 }
 
@@ -516,6 +634,16 @@ async function diagnoseTargets(options) {
   const checks = [];
   for (const target of targets) {
     try {
+      const language = normalizeRepositoryLanguage(target.language || "");
+      if (["c", "cpp"].includes(language)) {
+        addCheck(
+          checks,
+          `target:${target.id}`,
+          "warning",
+          `${target.id}: C/C++ detection is available, but repair/certification targets are not implemented yet.`
+        );
+        continue;
+      }
       const input = await createInputFromRepositoryTarget({ ...options, targetId: target.id });
       const tests = JSON.parse(input.testsText);
       addCheck(
@@ -533,6 +661,282 @@ async function diagnoseTargets(options) {
 
 function addCheck(checks, name, status, message) {
   checks.push({ name, status, message });
+}
+
+async function detectConfiguredTargetFailures({ repoRoot, configPath, maxTargets }) {
+  let targets;
+  try {
+    targets = await listRepositoryTargets({ repoRoot, configPath });
+  } catch (error) {
+    return [repositoryFinding({
+      severity: "high",
+      category: "configuration",
+      title: "Configured targets could not be loaded",
+      message: error.message
+    })];
+  }
+
+  const findings = [];
+  if (targets.length > maxTargets) {
+    findings.push(repositoryFinding({
+      severity: "info",
+      category: "scan-limit",
+      title: "Target detection was capped",
+      message: `Checked ${maxTargets} of ${targets.length} configured targets.`
+    }));
+  }
+
+  const { runPatchProofIsolated } = await import("./sandbox/hosted-runner.js");
+  for (const target of targets.slice(0, maxTargets)) {
+    const targetLanguage = normalizeRepositoryLanguage(target.language || "");
+    if (["c", "cpp"].includes(targetLanguage)) {
+      findings.push(repositoryFinding({
+        severity: "info",
+        category: "c-cpp-foundation",
+        file: target.source,
+        title: `C/C++ target '${target.id}' detected`,
+        message: "PatchProof can inspect and statically scan this target, but C/C++ repair/certification is not implemented yet.",
+        suggestion: "Use `patchproof detect --repo <path> --run-tests` to combine static C/C++ findings with your project test output."
+      }));
+      continue;
+    }
+
+    let input;
+    try {
+      input = await createInputFromRepositoryTarget({ repoRoot, configPath, targetId: target.id });
+    } catch (error) {
+      findings.push(repositoryFinding({
+        severity: "medium",
+        category: "target-resolution",
+        file: target.source || target.tests,
+        title: `Target '${target.id}' could not be resolved`,
+        message: error.message,
+        suggestion: "Fix the target source/tests paths or function name."
+      }));
+      continue;
+    }
+
+    const runner = await runPatchProofIsolated({
+      ...input,
+      limits: {
+        ...(input.limits || {}),
+        maxCandidates: Math.min(Number(input.limits?.maxCandidates || 1), 1),
+        minEvidenceScore: 0
+      }
+    }, { limits: { timeoutMs: 10000, maxInputBytes: 512 * 1024 } });
+
+    if (!runner.ok) {
+      findings.push(repositoryFinding({
+        severity: "medium",
+        category: "target-execution",
+        file: input.repository?.source || target.source,
+        title: `Target '${target.id}' could not be executed`,
+        message: runner.error?.message || "The isolated verifier failed.",
+        suggestion: "Run `patchproof doctor --repo <path>` and inspect the target tests/source."
+      }));
+      continue;
+    }
+
+    const failing = (runner.result?.baseline?.tests || []).filter((test) => !test.pass);
+    if (failing.length) {
+      findings.push(repositoryFinding({
+        severity: "high",
+        category: "failing-evidence",
+        file: input.repository?.source || target.source,
+        title: `Target '${target.id}' has failing executable evidence`,
+        message: `${failing.length} baseline test(s) failed before any repair was applied.`,
+        evidence: failing.slice(0, 5).map((test) => `${test.name}: ${JSON.stringify(test.observation)}`).join("\n"),
+        suggestion: "Open this target in PatchProof to generate and certify candidate patches."
+      }));
+    }
+  }
+  return findings;
+}
+
+function scanSourceForBugSignals(file, text) {
+  const language = languageFromPath(file);
+  const findings = [];
+  const lines = String(text || "").split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const lineNumber = index + 1;
+    if (/\b(?:BUG|FIXME|HACK)\b/i.test(line)) {
+      findings.push(repositoryFinding({
+        severity: "low",
+        category: "comment-marker",
+        file,
+        line: lineNumber,
+        title: "Bug marker comment found",
+        message: "The source contains an explicit bug/fixme marker.",
+        evidence: line.trim(),
+        suggestion: "Review this marker and convert it into an executable test if it describes real failing behavior."
+      }));
+    }
+    if (language === "javascript" || language === "typescript") {
+      scanJavaScriptLine(findings, file, line, lineNumber);
+    } else if (language === "python") {
+      scanPythonLine(findings, file, lines, index);
+    } else if (language === "c" || language === "cpp") {
+      scanCLine(findings, file, line, lineNumber);
+    }
+  }
+  return findings;
+}
+
+function scanJavaScriptLine(findings, file, line, lineNumber) {
+  if (/\bif\s*\([^)]*[^=!<>]=[^=][^)]*\)/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "medium",
+      category: "static-javascript",
+      file,
+      line: lineNumber,
+      title: "Assignment inside conditional",
+      message: "This may be an accidental assignment where a comparison was intended.",
+      evidence: line.trim()
+    }));
+  }
+  if (/[^=!]==[^=]/.test(line) || /!=[^=]/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "low",
+      category: "static-javascript",
+      file,
+      line: lineNumber,
+      title: "Loose equality comparison",
+      message: "Loose equality can hide coercion bugs in boundary or validation code.",
+      evidence: line.trim(),
+      suggestion: "Prefer strict equality unless coercion is intentional and tested."
+    }));
+  }
+}
+
+function scanPythonLine(findings, file, lines, index) {
+  const line = lines[index];
+  const lineNumber = index + 1;
+  if (/^\s*def\s+\w+\([^)]*=\s*(?:\[\]|\{\}|set\(\))/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "high",
+      category: "static-python",
+      file,
+      line: lineNumber,
+      title: "Mutable default argument",
+      message: "Mutable defaults are shared across calls and commonly cause state leakage.",
+      evidence: line.trim(),
+      suggestion: "Use None as the default and create a new list/dict/set inside the function."
+    }));
+  }
+  if (/^\s*return\s+\w+\.append\(/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "high",
+      category: "static-python",
+      file,
+      line: lineNumber,
+      title: "Returning list.append result",
+      message: "list.append mutates the list and returns None.",
+      evidence: line.trim(),
+      suggestion: "Append first, then return the list."
+    }));
+  }
+  if (/^\s*except\s*:/.test(line) && /^\s*pass\s*$/.test(lines[index + 1] || "")) {
+    findings.push(repositoryFinding({
+      severity: "medium",
+      category: "static-python",
+      file,
+      line: lineNumber,
+      title: "Bare except swallows failures",
+      message: "A bare except followed by pass can hide real runtime bugs.",
+      evidence: `${line.trim()} ${(lines[index + 1] || "").trim()}`.trim(),
+      suggestion: "Catch a specific exception and assert expected behavior in tests."
+    }));
+  }
+}
+
+function scanCLine(findings, file, line, lineNumber) {
+  if (/\bgets\s*\(/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "critical",
+      category: "static-c-cpp",
+      file,
+      line: lineNumber,
+      title: "Unsafe gets call",
+      message: "gets cannot bound input and is unsafe.",
+      evidence: line.trim(),
+      suggestion: "Use fgets or a bounded input API."
+    }));
+  }
+  if (/\b(?:strcpy|strcat|sprintf|vsprintf)\s*\(/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "high",
+      category: "static-c-cpp",
+      file,
+      line: lineNumber,
+      title: "Unbounded C string API",
+      message: "This call can overflow buffers when inputs are not tightly controlled.",
+      evidence: line.trim(),
+      suggestion: "Use bounded alternatives and add tests for maximum-length inputs."
+    }));
+  }
+  if (/\bscanf\s*\(\s*"[^"]*%s/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "high",
+      category: "static-c-cpp",
+      file,
+      line: lineNumber,
+      title: "Unbounded scanf string read",
+      message: "scanf with %s and no width limit can overflow the destination buffer.",
+      evidence: line.trim(),
+      suggestion: "Add a field width or use fgets."
+    }));
+  }
+  if (/\bif\s*\([^)]*[^=!<>]=[^=][^)]*\)/.test(line)) {
+    findings.push(repositoryFinding({
+      severity: "medium",
+      category: "static-c-cpp",
+      file,
+      line: lineNumber,
+      title: "Assignment inside conditional",
+      message: "This may be intentional, but it is a common C/C++ bug pattern.",
+      evidence: line.trim()
+    }));
+  }
+}
+
+function repositoryFinding({ severity, category, file = null, line = null, title, message, evidence = "", suggestion = "" }) {
+  return {
+    severity,
+    category,
+    file,
+    line,
+    title,
+    message,
+    evidence,
+    suggestion
+  };
+}
+
+function summarizeFindings(findings) {
+  const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const finding of findings) {
+    bySeverity[finding.severity] = (bySeverity[finding.severity] || 0) + 1;
+  }
+  return {
+    totalFindings: findings.length,
+    bySeverity,
+    highestSeverity: ["critical", "high", "medium", "low", "info"].find((severity) => bySeverity[severity]) || "none"
+  };
+}
+
+function summarizeProcessOutput(result) {
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+  return output.length <= 3000 ? output : `${output.slice(0, 3000)}\n... output truncated ...`;
+}
+
+function languageFromPath(file) {
+  if (/\.(?:ts|tsx)$/.test(file)) return "typescript";
+  if (/\.(?:mjs|cjs|js|jsx)$/.test(file)) return "javascript";
+  if (/\.py$/.test(file)) return "python";
+  if (/\.(?:cc|cpp|cxx|hpp|hh|hxx)$/.test(file)) return "cpp";
+  if (/\.(?:c|h)$/.test(file)) return "c";
+  return "unknown";
 }
 
 function pythonInfo() {
@@ -625,6 +1029,10 @@ function detectPackageManager(files) {
   if (files.includes("poetry.lock")) return "poetry";
   if (files.includes("uv.lock")) return "uv";
   if (files.includes("pyproject.toml")) return "python";
+  if (files.includes("vcpkg.json")) return "vcpkg";
+  if (files.includes("conanfile.txt") || files.includes("conanfile.py")) return "conan";
+  if (files.includes("CMakeLists.txt")) return "cmake";
+  if (files.includes("Makefile") || files.includes("makefile")) return "make";
   return null;
 }
 
@@ -633,10 +1041,12 @@ function detectLanguages({ files, packageJson, pyproject }) {
   if (packageJson || files.some((file) => /\.(?:mjs|cjs|js|jsx)$/.test(file))) languages.add("javascript");
   if (files.some((file) => /\.(?:ts|tsx)$/.test(file))) languages.add("typescript");
   if (pyproject || files.some((file) => /\.py$/.test(file))) languages.add("python");
+  if (files.some((file) => /\.(?:c|h)$/.test(file))) languages.add("c");
+  if (files.some((file) => /\.(?:cc|cpp|cxx|hpp|hh|hxx)$/.test(file))) languages.add("cpp");
   return [...languages].sort();
 }
 
-function detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, testFiles }) {
+function detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, requirements, cmakeLists, makefile, conanfile, vcpkg, testFiles, files }) {
   const frameworks = new Set();
   const scripts = Object.values(packageJson?.scripts || {}).join(" ");
   const dependencies = {
@@ -653,6 +1063,22 @@ function detectFrameworks({ packageJson, pyproject, pytestIni, setupCfg, require
   if (/\bpytest\b/i.test(pythonConfig) || testFiles.some((file) => /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/.test(file))) {
     frameworks.add("pytest");
   }
+  const nativeConfig = [cmakeLists, makefile, conanfile, vcpkg].filter(Boolean).join("\n");
+  if (cmakeLists) frameworks.add("cmake");
+  if (makefile && /^test\s*:/m.test(makefile)) frameworks.add("make");
+  if (/\b(?:enable_testing|add_test|ctest)\b/i.test(nativeConfig)) frameworks.add("ctest");
+  if (/\b(?:gtest|googletest|GTest)\b/.test(nativeConfig) || testFiles.some((file) => /(?:gtest|google|_test)\.(?:c|cc|cpp|cxx)$/.test(file))) {
+    frameworks.add("gtest");
+  }
+  if (/\bCatch2?\b/.test(nativeConfig) || testFiles.some((file) => /(?:catch|catch2|_test)\.(?:cc|cpp|cxx)$/.test(file))) {
+    frameworks.add("catch2");
+  }
+  if (/\bdoctest\b/.test(nativeConfig) || testFiles.some((file) => /(?:doctest|_test)\.(?:cc|cpp|cxx)$/.test(file))) {
+    frameworks.add("doctest");
+  }
+  if (files.some((file) => /\.(?:c|cc|cpp|cxx|h|hpp|hh|hxx)$/.test(file)) && ![...frameworks].some((framework) => ["cmake", "make", "ctest", "gtest", "catch2", "doctest"].includes(framework))) {
+    frameworks.add("native-c-cpp");
+  }
   return [...frameworks].sort();
 }
 
@@ -667,6 +1093,8 @@ function detectFrameworkAdapters({ frameworks, testFiles }) {
       testFiles: testFiles.filter((file) => frameworkMatchesFile(adapter, file)).slice(0, 50),
       limitation: supported
         ? "Extracts direct literal assertions such as expect(fn(args)).toEqual(value) or assert fn(args) == value."
+        : ["cmake", "make", "ctest", "gtest", "catch2", "doctest", "native-c-cpp"].includes(adapter)
+          ? "C/C++ assertion extraction is not implemented yet; PatchProof can inspect and statically detect risky code patterns."
         : "No direct framework adapter yet."
     };
   });
@@ -682,11 +1110,17 @@ function detectTestCommands({ packageJson, frameworks }) {
     commands.push({ tool: "jest", command: "npx jest" });
   }
   if (frameworks.includes("pytest")) commands.push({ tool: "pytest", command: "python -m pytest" });
+  if (frameworks.includes("ctest")) commands.push({ tool: "ctest", command: "ctest --test-dir build --output-on-failure" });
+  if (frameworks.includes("make")) commands.push({ tool: "make", command: "make test" });
   return commands;
 }
 
 function frameworkMatchesFile(framework, file) {
   if (framework === "pytest") return /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/.test(file);
+  if (["cmake", "make", "ctest", "gtest", "catch2", "doctest", "native-c-cpp"].includes(framework)) {
+    return /(?:^|\/)(?:test|tests)\//.test(file) && /\.(?:c|cc|cpp|cxx|h|hpp|hh|hxx)$/.test(file) ||
+      /(?:^test_|_test\.|\.test\.|spec\.)/.test(file) && /\.(?:c|cc|cpp|cxx)$/.test(file);
+  }
   if (["jest", "vitest", "node:test"].includes(framework)) {
     return /\.(?:test|spec)\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(file) || /(?:^|\/)(?:test|tests|__tests__)\//.test(file);
   }
@@ -696,6 +1130,7 @@ function frameworkMatchesFile(framework, file) {
 function inferFrameworkFromPath(testPath) {
   if (/\.py$/.test(testPath)) return "pytest";
   if (/\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(testPath)) return "jest";
+  if (/\.(?:c|cc|cpp|cxx)$/.test(testPath)) return "native-c-cpp";
   return "unknown";
 }
 
@@ -705,6 +1140,10 @@ function normalizeFramework(framework) {
   if (value === "py" || value === "pytest") return "pytest";
   if (value === "vitest") return "vitest";
   if (value === "jest") return "jest";
+  if (value === "c++") return "cpp";
+  if (["cmake", "make", "ctest", "gtest", "googletest", "catch2", "doctest", "native-c-cpp"].includes(value)) {
+    return value === "googletest" ? "gtest" : value;
+  }
   return value || "unknown";
 }
 
@@ -958,7 +1397,7 @@ function parseSimpleObject(value) {
 
 function isSourceFile(file) {
   if (isTestFile(file)) return false;
-  if (!/\.(?:mjs|cjs|js|jsx|ts|tsx|py)$/.test(file)) return false;
+  if (!/\.(?:mjs|cjs|js|jsx|ts|tsx|py|c|cc|cpp|cxx|h|hpp|hh|hxx)$/.test(file)) return false;
   return /^(?:src|lib|app|packages|server|services)\//.test(file) || !file.includes("/");
 }
 
@@ -967,7 +1406,17 @@ function isTestFile(file) {
   return /(?:^|\/)(?:test|tests|__tests__)\//.test(file) ||
     /\.(?:test|spec)\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(file) ||
     /(?:^test_.*|.*_test)\.py$/.test(name) ||
+    /(?:^test_|_test\.|\.test\.|spec\.).*\.(?:c|cc|cpp|cxx)$/.test(name) ||
     /\.patchproof\.json$/.test(file);
+}
+
+function normalizeRepositoryLanguage(language) {
+  const value = String(language || "javascript").toLowerCase();
+  if (value === "js") return "javascript";
+  if (value === "ts") return "typescript";
+  if (value === "py") return "python";
+  if (["cc", "cxx", "c++"].includes(value)) return "cpp";
+  return value;
 }
 
 function buildInspectionSuggestions({ patchproof, frameworks, sourceFiles, patchproofTestFiles, testFiles }) {

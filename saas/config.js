@@ -43,8 +43,8 @@ export function parsePatchproofConfig(text) {
 
 export function validatePatchproofConfig(config) {
   if (config.version !== 1) throw new Error("patchproof.yml version must be 1.");
-  if (!["javascript", "typescript", "python"].includes(config.project.language)) {
-    throw new Error("project.language must be javascript, typescript, or python.");
+  if (!["javascript", "typescript", "python", "c", "cpp", "c++"].includes(config.project.language)) {
+    throw new Error("project.language must be javascript, typescript, python, c, cpp, or c++.");
   }
   if (!["disabled", "allow-install"].includes(config.runner.network)) {
     throw new Error("runner.network must be disabled or allow-install.");
@@ -68,8 +68,8 @@ export function validatePatchproofConfig(config) {
     if (!target || typeof target !== "object" || Array.isArray(target)) {
       throw new Error(`target '${id}' must be an object.`);
     }
-    if (target.language && !["javascript", "typescript", "python"].includes(target.language)) {
-      throw new Error(`target '${id}' language must be javascript, typescript, or python.`);
+    if (target.language && !["javascript", "typescript", "python", "c", "cpp", "c++"].includes(target.language)) {
+      throw new Error(`target '${id}' language must be javascript, typescript, python, c, cpp, or c++.`);
     }
   }
   return config;

@@ -35,6 +35,7 @@
     "app.js",
     "bin",
     "compose.yml",
+    "design-examples.html",
     "Dockerfile",
     "docs",
     "engine.js",

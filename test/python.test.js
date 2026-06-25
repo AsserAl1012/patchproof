@@ -102,7 +102,85 @@ test("Python supplied candidates may raise safe built-in exceptions", () => {
   assert.equal(result.certificate.selectedPatch.generator, "model");
 });
 
-test("Python rejects imports and unsafe builtins", () => {
+test("Python local templates repair negative input exception contracts", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `def require_positive(value):
+    if value < 0:
+        return None
+    return value`,
+    tests: [
+      { name: "negative rejected", args: [-1], expectError: "ValueError" },
+      { name: "positive preserved", args: [2], expect: 2 }
+    ],
+    bugReport: "negative values should raise ValueError",
+    precondition: "isinstance(args[0], int)",
+    mayChange: "args[0] < 0",
+    postcondition: "observation['ok'] == (args[0] >= 0)"
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.selectedPatch.template, "raise-value-error-negative");
+});
+
+test("Python supports safe stdlib imports, helpers, classes, and explicit target functions", () => {
+  const source = `import math
+
+class Doubler:
+    def __init__(self):
+        self.factor = 2
+
+    def apply(self, value):
+        return value * self.factor
+
+def floor_value(value):
+    return math.floor(value)
+
+def scaled_floor(value):
+    return Doubler().apply(floor_value(value)) - 1`;
+  const candidate = source.replace("return Doubler().apply(floor_value(value)) - 1", "return Doubler().apply(floor_value(value))");
+  const result = runPatchProof({
+    language: "python",
+    functionName: "scaled_floor",
+    source,
+    tests: [
+      { name: "rounds down then doubles", args: [3.9], expect: 6 },
+      { name: "preserves lower integer", args: [2.1], expect: 4 }
+    ],
+    bugReport: "scaled_floor subtracts one after scaling",
+    precondition: "isinstance(args[0], (int, float))",
+    mayChange: "True",
+    postcondition: "result % 2 == 0",
+    candidatePatches: [{ source: candidate, title: "Remove stray subtraction" }]
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.target.function, "scaled_floor");
+});
+
+test("Python supports async target functions", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `async def increment(value):
+    return value`,
+    tests: [
+      { name: "increments one", args: [1], expect: 2 },
+      { name: "increments negative", args: [-2], expect: -1 }
+    ],
+    bugReport: "async increment should add one",
+    precondition: "isinstance(args[0], int)",
+    mayChange: "True",
+    postcondition: "result == args[0] + 1",
+    candidatePatches: [
+      {
+        source: `async def increment(value):
+    return value + 1`,
+        title: "Add one asynchronously"
+      }
+    ]
+  });
+  assert.equal(result.certificate.status, "certified");
+});
+
+test("Python rejects unsafe imports and builtins", () => {
   assert.throws(
     () =>
       runPatchProof({
@@ -110,7 +188,7 @@ test("Python rejects imports and unsafe builtins", () => {
         source: "import os\ndef unsafe(value):\n    return os.listdir('.')",
         tests: [{ args: [1], expect: [] }]
       }),
-    /exactly one named function|Import is not allowed/
+    /import 'os' is not allowed|module 'os' is not allowed/
   );
 });
 

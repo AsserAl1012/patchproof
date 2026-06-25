@@ -61,7 +61,9 @@ const elements = {
   opsRoleInput: document.querySelector("#opsRoleInput"),
   opsSessionInput: document.querySelector("#opsSessionInput"),
   runnerLabel: document.querySelector("#runnerLabel"),
-  opsOutput: document.querySelector("#opsOutput")
+  opsOutput: document.querySelector("#opsOutput"),
+  viewLinks: document.querySelectorAll("[data-view-link]"),
+  viewSections: document.querySelectorAll("[data-view]")
 };
 
 const RUN_HISTORY_KEY = "patchproof.runHistory.v1";
@@ -77,6 +79,8 @@ let pendingProjectRunId = null;
 let selectedRunId = null;
 
 function init() {
+  bindViewNavigation();
+  activateViewFromHash();
   renderScenarios();
   loadExample(activeExample);
   bindEvents();
@@ -148,6 +152,53 @@ function bindEvents() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => activateTab(tab.dataset.tab));
   });
+}
+
+function bindViewNavigation() {
+  elements.viewLinks.forEach((link) => {
+    link.addEventListener("click", (event) => {
+      const view = link.dataset.viewLink;
+      if (!view) return;
+      event.preventDefault();
+      showView(view, {
+        hash: link.getAttribute("href") || `#${view}`,
+        scrollTarget: link.dataset.scrollTarget || ""
+      });
+    });
+  });
+  window.addEventListener("hashchange", activateViewFromHash);
+}
+
+function activateViewFromHash() {
+  const hash = window.location.hash || "#repair";
+  if (hash === "#projects" || hash === "#private-workspace") {
+    showView("projects", { hash: "#projects" });
+    return;
+  }
+  showView("repair", {
+    hash: hash === "#evidence" || hash === "#evidence-workspace" ? "#evidence" : "#repair",
+    scrollTarget: hash === "#evidence" || hash === "#evidence-workspace" ? "#evidence-workspace" : ""
+  });
+}
+
+function showView(view, { hash = `#${view}`, scrollTarget = "" } = {}) {
+  elements.viewSections.forEach((section) => {
+    section.classList.toggle("active", section.dataset.view === view);
+  });
+  elements.viewLinks.forEach((link) => {
+    const active = link.getAttribute("href") === hash;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  if (window.location.hash !== hash) {
+    history.pushState(null, "", hash);
+  }
+  if (scrollTarget) {
+    window.requestAnimationFrame(() => {
+      document.querySelector(scrollTarget)?.scrollIntoView({ block: "start" });
+    });
+  }
 }
 
 function runEngine() {
@@ -341,7 +392,7 @@ function renderHistory() {
   for (const item of history) {
     const button = document.createElement("button");
     button.className = `history-item ${item.status}`;
-    button.innerHTML = `<strong>${escapeHtml(item.functionName)}</strong><span>${escapeHtml(item.status)} · ${Math.round(item.score * 100)}% · ${escapeHtml(item.runId)}</span>`;
+    button.innerHTML = `<strong>${escapeHtml(item.functionName)}</strong><span>${escapeHtml(item.status)} - ${Math.round(item.score * 100)}% - ${escapeHtml(item.runId)}</span>`;
     button.addEventListener("click", () => loadCertificate(item.certificate));
     elements.historyList.appendChild(button);
   }
@@ -486,7 +537,7 @@ function renderSaasState() {
   const org = auth.orgs?.find((item) => item.id === auth.orgId) || auth.orgs?.[0];
   auth.orgId = org?.id;
   elements.authState.textContent = `${auth.user.email}`;
-  elements.orgLabel.textContent = `${org?.name || "Org"} · ${org?.role || "member"}`;
+  elements.orgLabel.textContent = `${org?.name || "Org"} - ${org?.role || "member"}`;
 }
 
 async function createProject() {
@@ -597,7 +648,7 @@ async function loadRuns() {
     button.className = "dashboard-item";
     if (["queued", "running"].includes(run.status)) shouldPoll = true;
     if (run.id === pendingProjectRunId && !["queued", "running"].includes(run.status)) finishedPendingRun = run;
-    button.innerHTML = `<strong>${escapeHtml(run.status)}</strong><span>${escapeHtml(run.id)} · ${Math.round((run.evidenceScore || 0) * 100)}% · ${escapeHtml(run.createdAt)}</span>`;
+    button.innerHTML = `<strong>${escapeHtml(run.status)}</strong><span>${escapeHtml(run.id)} - ${Math.round((run.evidenceScore || 0) * 100)}% - ${escapeHtml(run.createdAt)}</span>`;
     button.addEventListener("click", () => loadRunDetail(run.id));
     elements.runList.appendChild(button);
   }

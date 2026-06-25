@@ -8,96 +8,23 @@
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>PatchProof</h1>
-          <p>Private AI bug repair with replayable evidence certificates.</p>
-        </div>
-        <div class="toolbar">
-          <button id="dashboardRunButton" class="primary">Run Project</button>
-          <button id="runButton" class="primary">Run PatchProof</button>
-          <button id="applyPatchButton">Apply Patch</button>
-          <button id="resetButton">Reset Scenario</button>
-          <button id="copyCertButton">Copy Certificate</button>
-          <button id="downloadCertButton">Download Certificate</button>
-        </div>
-      </header>
-
-      <section class="saas-dashboard">
-        <div class="auth-card" id="authCard">
-          <div class="panel-header">
-            <span>Private SaaS</span>
-            <span id="authState" class="muted">Not signed in</span>
-          </div>
-          <div class="auth-grid">
-            <input id="authEmailInput" type="email" placeholder="owner@example.com">
-            <input id="authPasswordInput" type="password" placeholder="password, 8+ characters">
-            <input id="authOrgInput" type="text" placeholder="organization name">
-            <div class="auth-actions">
-              <button id="bootstrapButton">Bootstrap Admin</button>
-              <button id="loginButton">Login</button>
-              <button id="logoutButton">Logout</button>
-            </div>
+      <aside class="sidebar">
+        <div class="brand-block">
+          <span class="brand-mark">PP</span>
+          <div>
+            <h1>PatchProof</h1>
+            <p>Private repair validation with replayable evidence.</p>
           </div>
         </div>
 
-        <div class="dashboard-grid">
-          <div class="panel dashboard-panel">
-            <div class="panel-header">
-              <span>Projects</span>
-              <span id="orgLabel" class="muted">No org</span>
-            </div>
-            <div class="project-form">
-              <input id="projectNameInput" type="text" placeholder="Project name">
-              <input id="projectRepoInput" type="text" placeholder="Repository URL">
-              <button id="createProjectButton">Create Project</button>
-            </div>
-            <div class="project-form compact-form">
-              <input id="githubInstallationInput" type="text" placeholder="GitHub installation id">
-              <input id="githubRepoInput" type="text" placeholder="owner/repo">
-              <button id="linkGithubButton">Link GitHub</button>
-            </div>
-            <div id="projectList" class="dashboard-list">Login to load projects.</div>
-          </div>
+        <nav class="side-nav" aria-label="Workspace sections">
+          <a href="#projects" data-view-link="projects">Projects</a>
+          <a href="#repair" data-view-link="repair">Repair Lab</a>
+          <a href="#evidence" data-view-link="repair" data-scroll-target="#evidence-workspace">Evidence</a>
+          <a href="./design-examples.html">Design Examples</a>
+        </nav>
 
-          <div class="panel dashboard-panel">
-            <div class="panel-header">
-              <span>Runs</span>
-              <span id="selectedProjectLabel" class="muted">No project selected</span>
-            </div>
-            <div id="runList" class="dashboard-list">Create or select a project.</div>
-          </div>
-
-          <div class="panel dashboard-panel">
-            <div class="panel-header">
-              <span>Operations</span>
-              <span id="runnerLabel" class="muted">Runner unknown</span>
-            </div>
-            <div class="ops-grid">
-              <button id="loadSettingsButton">Load Settings</button>
-              <button id="loadRunnersButton">Runner Health</button>
-              <button id="loadApiKeysButton">API Keys</button>
-              <button id="createApiKeyButton">Create API Key</button>
-              <button id="loadInvitationsButton">Invitations</button>
-              <button id="createInvitationButton">Invite User</button>
-              <button id="createPasswordResetButton">Password Reset</button>
-              <button id="loadSessionsButton">Sessions</button>
-              <button id="revokeSessionButton">Revoke Session</button>
-              <button id="loadAuditButton">Audit Log</button>
-              <button id="cancelRunButton">Cancel Selected Run</button>
-            </div>
-            <div class="project-form compact-form">
-              <input id="opsEmailInput" type="email" placeholder="user@example.com">
-              <input id="opsRoleInput" type="text" placeholder="role: developer">
-              <input id="opsSessionInput" type="text" placeholder="session id">
-            </div>
-            <div id="opsOutput" class="ops-output">Login to inspect operations.</div>
-          </div>
-        </div>
-      </section>
-
-      <main class="workspace">
-        <aside class="scenario-rail">
+        <section class="scenario-rail" aria-label="Bug lab scenarios">
           <div class="section-title">Bug Lab</div>
           <div id="scenarioList" class="scenario-list"></div>
           <div class="score-box">
@@ -114,72 +41,198 @@
             <label class="import-button" for="importCertInput">Import Certificate</label>
             <input id="importCertInput" type="file" accept="application/json,.json">
           </div>
-        </aside>
+        </section>
+      </aside>
 
-        <section class="editor-grid">
-          <div class="panel code-panel">
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="page-title">
+            <span class="eyebrow">Self-hosted patch certification</span>
+            <h2>Repair, verify, and replay small code fixes</h2>
+            <p>Queue project runs, inspect bounded evidence, and export certificates from one workspace.</p>
+          </div>
+          <div class="toolbar" aria-label="Primary actions">
+            <button id="dashboardRunButton" class="primary">Run Project</button>
+            <button id="runButton" class="primary">Run PatchProof</button>
+            <button id="applyPatchButton">Apply Patch</button>
+            <button id="resetButton">Reset</button>
+            <button id="copyCertButton">Copy Cert</button>
+            <button id="downloadCertButton">Download Cert</button>
+          </div>
+        </header>
+
+        <section id="private-workspace" class="saas-dashboard app-view" data-view="projects">
+          <div class="panel auth-card" id="authCard">
             <div class="panel-header">
-              <span>Function Under Repair</span>
-              <div>
-                <select id="languageInput" aria-label="Source language">
-                  <option value="javascript">JavaScript</option>
-                  <option value="python">Python</option>
-                </select>
-                <span id="functionName" class="muted">not compiled</span>
+              <span>Private Workspace</span>
+              <span id="authState" class="status-chip neutral">Not signed in</span>
+            </div>
+            <div class="auth-grid">
+              <label>
+                <span>Email</span>
+                <input id="authEmailInput" type="email" placeholder="owner@example.com">
+              </label>
+              <label>
+                <span>Password</span>
+                <input id="authPasswordInput" type="password" placeholder="password, 8+ characters">
+              </label>
+              <label>
+                <span>Organization</span>
+                <input id="authOrgInput" type="text" placeholder="organization name">
+              </label>
+              <div class="auth-actions">
+                <button id="bootstrapButton">Bootstrap</button>
+                <button id="loginButton">Login</button>
+                <button id="logoutButton">Logout</button>
               </div>
             </div>
-            <textarea id="sourceInput" spellcheck="false"></textarea>
           </div>
 
-          <div class="panel code-panel">
-            <div class="panel-header">
-              <span>Executable Tests</span>
-              <span class="muted">JSON cases</span>
+          <div class="dashboard-grid">
+            <div class="panel dashboard-panel">
+              <div class="panel-header">
+                <span>Projects</span>
+                <span id="orgLabel" class="muted">No org</span>
+              </div>
+              <div class="project-form">
+                <label>
+                  <span>Name</span>
+                  <input id="projectNameInput" type="text" placeholder="Project name">
+                </label>
+                <label>
+                  <span>Repository</span>
+                  <input id="projectRepoInput" type="text" placeholder="Repository URL">
+                </label>
+                <button id="createProjectButton">Create</button>
+              </div>
+              <div class="project-form compact-form">
+                <label>
+                  <span>Install ID</span>
+                  <input id="githubInstallationInput" type="text" placeholder="GitHub installation id">
+                </label>
+                <label>
+                  <span>Repo</span>
+                  <input id="githubRepoInput" type="text" placeholder="owner/repo">
+                </label>
+                <button id="linkGithubButton">Link GitHub</button>
+              </div>
+              <div id="projectList" class="dashboard-list">Login to load projects.</div>
             </div>
-            <textarea id="testsInput" spellcheck="false"></textarea>
-          </div>
 
-          <div class="panel code-panel">
-            <div class="panel-header">
-              <span>Behavioral Envelope</span>
-              <span class="muted">language expressions</span>
+            <div class="panel dashboard-panel">
+              <div class="panel-header">
+                <span>Runs</span>
+                <span id="selectedProjectLabel" class="muted">No project selected</span>
+              </div>
+              <div id="runList" class="dashboard-list">Create or select a project.</div>
             </div>
-            <label class="field-label" for="bugReportInput">Bug report</label>
-            <textarea id="bugReportInput" class="small-editor" spellcheck="false"></textarea>
-            <label class="field-label" for="preconditionInput">Precondition</label>
-            <input id="preconditionInput" type="text" spellcheck="false">
-            <label class="field-label" for="mayChangeInput">May-change predicate</label>
-            <input id="mayChangeInput" type="text" spellcheck="false">
-            <label class="field-label" for="postconditionInput">Postcondition</label>
-            <input id="postconditionInput" type="text" spellcheck="false">
-          </div>
 
-          <div class="panel results-panel">
-            <div class="panel-header">
-              <span>Candidate Patches</span>
-              <span id="candidateCount" class="muted">0 candidates</span>
+            <div class="panel dashboard-panel operations-card">
+              <div class="panel-header">
+                <span>Operations</span>
+                <span id="runnerLabel" class="status-chip neutral">Runner unknown</span>
+              </div>
+              <details class="ops-drawer">
+                <summary>Admin actions</summary>
+                <div class="ops-grid">
+                  <button id="loadSettingsButton">Settings</button>
+                  <button id="loadRunnersButton">Runner Health</button>
+                  <button id="loadApiKeysButton">API Keys</button>
+                  <button id="createApiKeyButton">Create API Key</button>
+                  <button id="loadInvitationsButton">Invitations</button>
+                  <button id="createInvitationButton">Invite User</button>
+                  <button id="createPasswordResetButton">Password Reset</button>
+                  <button id="loadSessionsButton">Sessions</button>
+                  <button id="revokeSessionButton">Revoke Session</button>
+                  <button id="loadAuditButton">Audit Log</button>
+                  <button id="cancelRunButton">Cancel Run</button>
+                </div>
+                <div class="ops-inputs">
+                  <label>
+                    <span>User email</span>
+                    <input id="opsEmailInput" type="email" placeholder="user@example.com">
+                  </label>
+                  <label>
+                    <span>Role</span>
+                    <input id="opsRoleInput" type="text" placeholder="developer">
+                  </label>
+                  <label>
+                    <span>Session</span>
+                    <input id="opsSessionInput" type="text" placeholder="session id">
+                  </label>
+                </div>
+              </details>
+              <div id="opsOutput" class="ops-output">Login to inspect operations.</div>
             </div>
-            <div id="candidateList" class="candidate-list empty-state">Run the engine to generate patches.</div>
           </div>
         </section>
 
-        <section class="evidence-area">
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="certificate">Certificate</button>
-            <button class="tab" data-tab="diff">Selected Diff</button>
-            <button class="tab" data-tab="console">Validation Console</button>
-          </div>
-          <div id="certificatePanel" class="tab-panel active">
-            <pre id="certificateOutput">{}</pre>
-          </div>
-          <div id="diffPanel" class="tab-panel">
-            <pre id="diffOutput">No selected patch yet.</pre>
-          </div>
-          <div id="consolePanel" class="tab-panel">
-            <div id="consoleOutput" class="console-log">No run yet.</div>
-          </div>
-        </section>
-      </main>
+        <main id="repair-workspace" class="workspace app-view active" data-view="repair">
+          <section class="editor-grid">
+            <div class="panel code-panel code-panel-large">
+              <div class="panel-header">
+                <span>Function Under Repair</span>
+                <div class="inline-meta">
+                  <select id="languageInput" aria-label="Source language">
+                    <option value="javascript">JavaScript</option>
+                    <option value="python">Python</option>
+                  </select>
+                  <span id="functionName" class="muted">not compiled</span>
+                </div>
+              </div>
+              <textarea id="sourceInput" spellcheck="false"></textarea>
+            </div>
+
+            <div class="panel code-panel">
+              <div class="panel-header">
+                <span>Executable Tests</span>
+                <span class="muted">JSON cases</span>
+              </div>
+              <textarea id="testsInput" spellcheck="false"></textarea>
+            </div>
+
+            <div class="panel code-panel envelope-panel">
+              <div class="panel-header">
+                <span>Behavioral Envelope</span>
+                <span class="muted">language expressions</span>
+              </div>
+              <label class="field-label" for="bugReportInput">Bug report</label>
+              <textarea id="bugReportInput" class="small-editor" spellcheck="false"></textarea>
+              <label class="field-label" for="preconditionInput">Precondition</label>
+              <input id="preconditionInput" type="text" spellcheck="false">
+              <label class="field-label" for="mayChangeInput">May-change predicate</label>
+              <input id="mayChangeInput" type="text" spellcheck="false">
+              <label class="field-label" for="postconditionInput">Postcondition</label>
+              <input id="postconditionInput" type="text" spellcheck="false">
+            </div>
+
+            <div class="panel results-panel">
+              <div class="panel-header">
+                <span>Candidate Patches</span>
+                <span id="candidateCount" class="muted">0 candidates</span>
+              </div>
+              <div id="candidateList" class="candidate-list empty-state">Run the engine to generate patches.</div>
+            </div>
+          </section>
+
+          <section id="evidence-workspace" class="evidence-area">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="certificate">Certificate</button>
+              <button class="tab" data-tab="diff">Selected Diff</button>
+              <button class="tab" data-tab="console">Validation Console</button>
+            </div>
+            <div id="certificatePanel" class="tab-panel active">
+              <pre id="certificateOutput">{}</pre>
+            </div>
+            <div id="diffPanel" class="tab-panel">
+              <pre id="diffOutput">No selected patch yet.</pre>
+            </div>
+            <div id="consolePanel" class="tab-panel">
+              <div id="consoleOutput" class="console-log">No run yet.</div>
+            </div>
+          </section>
+        </main>
+      </div>
     </div>
 
     <script type="module" src="./app.js"></script>
