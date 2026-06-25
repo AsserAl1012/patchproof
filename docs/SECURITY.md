@@ -11,10 +11,13 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - Production project runs are queued with leases, acknowledgements, retry limits, expired-lease recovery, and dead-letter tracking.
 - Docker runner mode uses one container per job, no network by default, read-only root filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, and cleanup after completion.
 - Docker runner jobs add `no-new-privileges`, drop Linux capabilities, disable IPC sharing, and can select a host-provided hardened runtime such as gVisor `runsc` or Kata with `PATCHPROOF_DOCKER_RUNTIME`.
+- `patchproof doctor --production` can enforce dedicated runner-host declarations with `PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true`; this fails production checks unless `PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated` is set.
 - Certificates, logs, diffs, and runner metadata are stored as hash-checked artifacts.
 - Certificates are always replay-verifiable. Deployments can additionally sign certificates with Ed25519 issuer signatures; verification checks the signature when `PATCHPROOF_CERTIFICATE_PUBLIC_KEY_PEM` is configured.
 - `/api/run` enforces JSON-only requests, body-size limits, and per-address token-bucket rate limits. It is disabled by default when `NODE_ENV=production` unless `PATCHPROOF_ENABLE_QUICK_RUN=true` is set explicitly.
 - Source and envelope expressions reject obvious dangerous tokens such as `fetch`, `eval`, `Function`, `Worker`, `localStorage`, `globalThis`, `process`, and dynamic imports.
+- Repository repair writes honor configured `allowedPaths` and `forbiddenPaths`, preserve line endings/BOMs, and expose selection filters so operators can scope repairs to reviewed findings.
+- C/C++ static repairs intentionally skip pointer destinations and only rewrite supported string APIs when the destination is detected as a local fixed array.
 - The static server binds to `127.0.0.1` by default.
 - The static server sets security headers including CSP without `unsafe-eval`, `worker-src 'none'`, `nosniff`, no-referrer, and frame denial.
 - Static file serving blocks path traversal and hidden dot-path access.
@@ -28,6 +31,8 @@ PatchProof is publishable as a self-hosted/private SaaS product for teams runnin
 - `patchproof retention` removes expired sessions, artifact metadata/files, audit events, and old webhook delivery records according to configured retention windows.
 - Queued/running project runs can be cancelled, and `patchproof reconcile` marks stale running jobs failed after runner crashes.
 - `patchproof keygen` generates production encryption and certificate signing material; `patchproof doctor --production` validates required self-hosted controls before launch.
+- `npm run security:check` verifies static security invariants such as disabled browser execution, no `unsafe-eval`, Docker default runner isolation, queue lease/ack/retry/dead-letter behavior, hashed sessions, and signed/provenance release workflow coverage.
+- `npm run production:check` validates Docker Compose configuration, container hardening flags, CI service-backed runner coverage, and release publishing gates.
 
 ## Trust Boundary
 

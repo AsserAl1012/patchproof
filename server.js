@@ -121,7 +121,19 @@ export function createPatchProofServer(options = {}) {
       return;
     }
 
-    if (apiPath.startsWith("/api/") && apiPath !== "/api/run") {
+    if (isQuickApiPath(apiPath)) {
+      try {
+        await handleQuickApi({ req, res, apiPath, enableApi, enableQuickRun, rateLimit });
+      } catch (error) {
+        writeJson(res, error.statusCode || 400, {
+          ok: false,
+          error: { message: error.message }
+        });
+      }
+      return;
+    }
+
+    if (apiPath.startsWith("/api/")) {
       if ([
         "/api/bootstrap",
         "/api/auth/login",
@@ -141,46 +153,6 @@ export function createPatchProofServer(options = {}) {
         writeJson(res, error.statusCode || 500, {
           ok: false,
           error: { message: error.message || "Unexpected API error." }
-        });
-      }
-      return;
-    }
-
-    if (apiPath === "/api/run") {
-      if (!enableApi || !enableQuickRun) {
-        writeJson(res, 404, { ok: false, error: { message: "API is disabled." } });
-        return;
-      }
-      if (req.method !== "POST") {
-        res.writeHead(405, { ...apiHeaders, Allow: "POST" });
-        res.end(JSON.stringify({ ok: false, error: { message: "Method not allowed." } }));
-        return;
-      }
-      const key = req.socket.remoteAddress || "unknown";
-      const rate = rateLimit(key);
-      if (!rate.allowed) {
-        res.writeHead(429, {
-          ...apiHeaders,
-          "Retry-After": String(rate.retryAfterSeconds)
-        });
-        res.end(JSON.stringify({ ok: false, error: { message: "Rate limit exceeded." } }));
-        return;
-      }
-      const contentType = req.headers["content-type"] || "";
-      if (!String(contentType).includes("application/json")) {
-        writeJson(res, 415, { ok: false, error: { message: "Content-Type must be application/json." } });
-        return;
-      }
-      try {
-        const payload = await readJsonBody(req, MAX_API_BODY_BYTES);
-        const result = await runPatchProofIsolated(payload);
-        writeJson(res, result.statusCode || (result.ok ? 200 : 400), result);
-      } catch (error) {
-        writeJson(res, error.statusCode || 400, {
-          ok: false,
-          error: {
-            message: error.message
-          }
         });
       }
       return;
@@ -253,6 +225,190 @@ export function createPatchProofServer(options = {}) {
     }
   });
   return server;
+}
+
+function isQuickApiPath(apiPath) {
+  return [
+    "/api/run",
+    "/api/model/check",
+    "/api/model/generate",
+    "/api/repository/inspect",
+    "/api/repository/init",
+    "/api/repository/detect",
+    "/api/repository/repair",
+    "/api/repository/target"
+  ].includes(apiPath);
+}
+
+async function handleQuickApi({ req, res, apiPath, enableApi, enableQuickRun, rateLimit }) {
+  if (!enableApi || !enableQuickRun) {
+    writeJson(res, 404, { ok: false, error: { message: "API is disabled." } });
+    return;
+  }
+  if (req.method !== "POST") {
+    res.writeHead(405, { ...apiHeaders, Allow: "POST" });
+    res.end(JSON.stringify({ ok: false, error: { message: "Method not allowed." } }));
+    return;
+  }
+  const key = `${req.socket.remoteAddress || "unknown"}:${apiPath}`;
+  const rate = rateLimit(key);
+  if (!rate.allowed) {
+    res.writeHead(429, {
+      ...apiHeaders,
+      "Retry-After": String(rate.retryAfterSeconds)
+    });
+    res.end(JSON.stringify({ ok: false, error: { message: "Rate limit exceeded." } }));
+    return;
+  }
+  const contentType = req.headers["content-type"] || "";
+  if (!String(contentType).includes("application/json")) {
+    writeJson(res, 415, { ok: false, error: { message: "Content-Type must be application/json." } });
+    return;
+  }
+
+  const payload = await readJsonBody(req, MAX_API_BODY_BYTES);
+  if (apiPath === "/api/run") {
+    const result = await runPatchProofIsolated(payload);
+    writeJson(res, result.statusCode || (result.ok ? 200 : 400), result);
+    return;
+  }
+  if (apiPath === "/api/model/check") {
+    const { estimateModelUsage, normalizeModelProvider } = await import("./saas/model-providers.js");
+    const settings = payload.settings || payload.model || payload;
+    const normalized = normalizeModelProvider(settings);
+    const usage = estimateModelUsage({
+      settings: normalized,
+      input: payload.input || {}
+    });
+    const apiKeyEnv = String(settings.apiKeyEnv || "PATCHPROOF_MODEL_API_KEY");
+    const apiKeyConfigured = Boolean(settings.apiKey || process.env[apiKeyEnv] || process.env.PATCHPROOF_MODEL_API_KEY);
+    const checks = [
+      { name: "provider", status: normalized.provider === "disabled" ? "warning" : "ok", message: normalized.provider },
+      { name: "model", status: normalized.provider === "disabled" || normalized.model ? "ok" : "error", message: normalized.model || "missing" },
+      { name: "baseUrl", status: normalized.provider === "disabled" || normalized.baseUrl ? "ok" : "error", message: normalized.baseUrl || "missing" },
+      {
+        name: "apiKey",
+        status: ["disabled", "local"].includes(normalized.provider) || apiKeyConfigured ? "ok" : "error",
+        message: ["disabled", "local"].includes(normalized.provider) ? "not required" : apiKeyConfigured ? `configured through ${apiKeyEnv}` : `${apiKeyEnv} not set`
+      },
+      {
+        name: "promptBudget",
+        status: usage.promptChars <= usage.maxPromptChars ? "ok" : "error",
+        message: `${usage.promptChars}/${usage.maxPromptChars} chars, approx ${usage.estimatedPromptTokens} tokens`
+      }
+    ];
+    writeJson(res, 200, {
+      ok: !checks.some((check) => check.status === "error"),
+      provider: normalized.provider,
+      model: normalized.model,
+      baseUrl: normalized.baseUrl,
+      usage,
+      checks
+    });
+    return;
+  }
+  if (apiPath === "/api/model/generate") {
+    const { generateModelCandidates } = await import("./saas/model-providers.js");
+    const settings = payload.settings || payload.model || {};
+    const apiKeyEnv = String(settings.apiKeyEnv || "PATCHPROOF_MODEL_API_KEY");
+    const result = await generateModelCandidates({
+      settings: {
+        ...settings,
+        apiKey: settings.apiKey || process.env[apiKeyEnv] || process.env.PATCHPROOF_MODEL_API_KEY || ""
+      },
+      input: payload.input || {}
+    });
+    writeJson(res, 200, {
+      ok: true,
+      provider: result.provider,
+      model: result.model,
+      usage: result.usage,
+      provenance: result.provenance,
+      candidates: result.candidates
+    });
+    return;
+  }
+
+  const repoOptions = repositoryRequestOptions(payload);
+  if (apiPath === "/api/repository/inspect") {
+    const { inspectRepository } = await import("./repository-adapter.js");
+    writeJson(res, 200, { ok: true, report: await inspectRepository(repoOptions) });
+    return;
+  }
+  if (apiPath === "/api/repository/init") {
+    const { initializeRepositoryConfig } = await import("./repository-adapter.js");
+    const result = await initializeRepositoryConfig({
+      ...repoOptions,
+      force: Boolean(payload.force)
+    });
+    writeJson(res, result.created ? 201 : 200, { ok: true, result });
+    return;
+  }
+  if (apiPath === "/api/repository/detect") {
+    const { detectRepositoryBugs, repositoryDetectionToSarif } = await import("./repository-adapter.js");
+    const report = await detectRepositoryBugs({
+      ...repoOptions,
+      runTests: Boolean(payload.runTests),
+      install: Boolean(payload.install),
+      installCommand: payload.installCommand || undefined,
+      build: Boolean(payload.build),
+      buildCommand: payload.buildCommand || undefined,
+      command: payload.command || undefined,
+      timeoutSeconds: payload.timeoutSeconds ? Number(payload.timeoutSeconds) : undefined,
+      maxFiles: payload.maxFiles ? Number(payload.maxFiles) : undefined,
+      maxScanFiles: payload.maxScanFiles ? Number(payload.maxScanFiles) : undefined,
+      suppressions: Array.isArray(payload.suppressions) ? payload.suppressions : undefined,
+      suppressionsPath: payload.suppressionsPath || undefined
+    });
+    writeJson(res, 200, {
+      ok: true,
+      report,
+      ...(payload.format === "sarif" ? { sarif: repositoryDetectionToSarif(report) } : {})
+    });
+    return;
+  }
+  if (apiPath === "/api/repository/repair") {
+    const { repairRepository } = await import("./repository-adapter.js");
+    const report = await repairRepository({
+      ...repoOptions,
+      apply: Boolean(payload.apply),
+      dryRun: !payload.apply || Boolean(payload.dryRun),
+      runTests: Boolean(payload.runTests),
+      install: Boolean(payload.install),
+      installCommand: payload.installCommand || undefined,
+      build: Boolean(payload.build),
+      buildCommand: payload.buildCommand || undefined,
+      command: payload.command || undefined,
+      timeoutSeconds: payload.timeoutSeconds ? Number(payload.timeoutSeconds) : undefined,
+      maxFiles: payload.maxFiles ? Number(payload.maxFiles) : undefined,
+      maxScanFiles: payload.maxScanFiles ? Number(payload.maxScanFiles) : undefined,
+      maxRepairs: payload.maxRepairs ? Number(payload.maxRepairs) : undefined,
+      fingerprints: Array.isArray(payload.fingerprints) ? payload.fingerprints : undefined,
+      categories: Array.isArray(payload.categories) ? payload.categories : undefined,
+      files: Array.isArray(payload.files) ? payload.files : undefined,
+      suppressions: Array.isArray(payload.suppressions) ? payload.suppressions : undefined,
+      suppressionsPath: payload.suppressionsPath || undefined,
+      revertOnFailure: payload.revertOnFailure !== false
+    });
+    writeJson(res, 200, { ok: true, report });
+    return;
+  }
+  if (apiPath === "/api/repository/target") {
+    const targetId = String(payload.targetId || "").trim();
+    if (!targetId) throw badRequest("targetId is required.");
+    const { createInputFromRepositoryTarget } = await import("./repository-adapter.js");
+    writeJson(res, 200, { ok: true, input: await createInputFromRepositoryTarget({ ...repoOptions, targetId }) });
+    return;
+  }
+
+  throw notFound("API route");
+}
+
+function repositoryRequestOptions(payload = {}) {
+  return {
+    repoRoot: payload.repoRoot || payload.root || process.cwd(),
+    configPath: payload.configPath || "patchproof.yml"
+  };
 }
 
 async function handleSaasApi({ req, res, requestPath, store, queue, artifactStore, inlineRuns, enableApi }) {
@@ -998,6 +1154,62 @@ function buildOpenApiDocument(req) {
           requestBody: jsonRequest("PatchProofInput"),
           responses: { "200": { description: "PatchProof result" } }
         }
+      },
+      "/model/check": {
+        post: {
+          summary: "Validate model-provider settings and estimate prompt usage without calling the provider. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("ModelCheckRequest"),
+          responses: { "200": { description: "Model setup report" } }
+        }
+      },
+      "/model/generate": {
+        post: {
+          summary: "Generate repair candidates with the configured model provider and return them for bounded validation. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("ModelGenerateRequest"),
+          responses: { "200": { description: "Generated model candidates" } }
+        }
+      },
+      "/repository/inspect": {
+        post: {
+          summary: "Inspect a local repository checkout. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("RepositoryRequest"),
+          responses: { "200": { description: "Repository inspection report" } }
+        }
+      },
+      "/repository/init": {
+        post: {
+          summary: "Create a starter patchproof.yml for a local repository checkout. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("RepositoryInitRequest"),
+          responses: { "201": { description: "Repository config created" } }
+        }
+      },
+      "/repository/detect": {
+        post: {
+          summary: "Detect likely bug signals in a local repository checkout and optionally export SARIF. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("RepositoryDetectRequest"),
+          responses: { "200": { description: "Repository detection report" } }
+        }
+      },
+      "/repository/repair": {
+        post: {
+          summary: "Preview or apply conservative repository-level static repairs. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("RepositoryRepairRequest"),
+          responses: { "200": { description: "Repository repair report" } }
+        }
+      },
+      "/repository/target": {
+        post: {
+          summary: "Load one configured local repository target as PatchProof input. Local/demo endpoint.",
+          security: [],
+          requestBody: jsonRequest("RepositoryTargetRequest"),
+          responses: { "200": { description: "PatchProof input for target" } }
+        }
       }
     },
     components: {
@@ -1067,6 +1279,49 @@ function openApiSchemas() {
     ProjectsResponse: { type: "object", properties: { ok: { const: true }, projects: { type: "array", items: { $ref: "#/components/schemas/Project" } } } },
     ProjectResponse: { type: "object", properties: { ok: { const: true }, project: { $ref: "#/components/schemas/Project" } } },
     PatchProofInput: { type: "object", required: ["source", "tests"], additionalProperties: true, properties: { language: { type: "string", enum: ["javascript", "python"] }, source: { type: "string" }, tests: { type: "array", items: { type: "object", additionalProperties: true } }, bugReport: { type: "string" }, precondition: { type: "string" }, mayChange: { type: "string" }, postcondition: { type: "string" } } },
+    ModelCheckRequest: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        settings: { type: "object", additionalProperties: true },
+        input: { $ref: "#/components/schemas/PatchProofInput" }
+      }
+    },
+    RepositoryRequest: { type: "object", properties: { repoRoot: { type: "string" }, configPath: { type: "string", default: "patchproof.yml" } } },
+    RepositoryInitRequest: { type: "object", properties: { repoRoot: { type: "string" }, configPath: { type: "string", default: "patchproof.yml" }, force: { type: "boolean" } } },
+    RepositoryDetectRequest: {
+      type: "object",
+      properties: {
+        repoRoot: { type: "string" },
+        configPath: { type: "string", default: "patchproof.yml" },
+        runTests: { type: "boolean" },
+        install: { type: "boolean" },
+        installCommand: { type: "string" },
+        build: { type: "boolean" },
+        buildCommand: { type: "string" },
+        command: { type: "string" },
+        format: { type: "string", enum: ["json", "sarif"] },
+        suppressions: { type: "array", items: { type: "string" } },
+        suppressionsPath: { type: "string" }
+      }
+    },
+    RepositoryRepairRequest: {
+      type: "object",
+      properties: {
+        repoRoot: { type: "string" },
+        configPath: { type: "string", default: "patchproof.yml" },
+        apply: { type: "boolean" },
+        dryRun: { type: "boolean" },
+        runTests: { type: "boolean" },
+        install: { type: "boolean" },
+        build: { type: "boolean" },
+        command: { type: "string" },
+        maxRepairs: { type: "integer", minimum: 1 },
+        suppressions: { type: "array", items: { type: "string" } },
+        suppressionsPath: { type: "string" }
+      }
+    },
+    RepositoryTargetRequest: { type: "object", required: ["targetId"], properties: { repoRoot: { type: "string" }, configPath: { type: "string", default: "patchproof.yml" }, targetId: { type: "string" } } },
     CreateRunRequest: { type: "object", properties: { input: { $ref: "#/components/schemas/PatchProofInput" }, trigger: { type: "string" }, metadata: { type: "object", additionalProperties: true } } },
     Run: { type: "object", properties: { id, orgId: id, projectId: id, trigger: { type: "string" }, status: { type: "string" }, evidenceScore: { type: "number" }, metadata: { type: "object", additionalProperties: true }, createdAt: timestamp, updatedAt: timestamp } },
     Job: { type: "object", properties: { id, runId: id, status: { type: "string" }, phase: { type: "string" }, runnerId: { type: ["string", "null"] }, attempt: { type: "integer" }, createdAt: timestamp, startedAt: timestamp, completedAt: timestamp } },

@@ -73,6 +73,25 @@ test("Python local templates repair append return bugs", () => {
   assert.equal(result.certificate.selectedPatch.template, "append-return-list");
 });
 
+test("Python local templates repair mutable default state leakage", () => {
+  const result = runPatchProof({
+    language: "python",
+    source: `def remember(value, seen=[]):
+    seen.append(value)
+    return seen`,
+    tests: [
+      { name: "first call", args: [1], expect: [1] },
+      { name: "second call is isolated", args: [2], expect: [2] }
+    ],
+    bugReport: "mutable default list leaks state between calls",
+    precondition: "True",
+    mayChange: "True",
+    postcondition: "isinstance(result, list) and len(result) == 1 and result[0] == args[0]"
+  });
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.certificate.selectedPatch.template, "mutable-default-none-guard");
+});
+
 test("Python supplied candidates may raise safe built-in exceptions", () => {
   const result = runPatchProof({
     language: "python",

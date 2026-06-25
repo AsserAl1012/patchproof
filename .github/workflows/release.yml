@@ -32,6 +32,8 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - run: npm run check
+      - run: npm run security:check
+      - run: npm run production:check
       - run: npm run release:check
       - run: npm test
       - run: npm run smoke

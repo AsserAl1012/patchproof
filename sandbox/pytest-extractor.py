@@ -20,14 +20,42 @@ def main():
 
 def extract_body_tests(body, function_name, tests, bindings_list):
     for bindings in bindings_list:
-        for node in ast.walk(ast.Module(body=body, type_ignores=[])):
-            extracted = None
-            if isinstance(node, ast.Assert):
-                extracted = assertion_to_test(node.test, function_name, len(tests) + 1, bindings)
-            elif isinstance(node, ast.With):
-                extracted = raises_to_test(node, function_name, len(tests) + 1, bindings)
-            if extracted:
-                tests.append(extracted)
+        extract_statement_tests(body, function_name, tests, dict(bindings))
+
+
+def extract_statement_tests(statements, function_name, tests, bindings):
+    for node in statements:
+        if isinstance(node, ast.Assign):
+            bind_assignment(node.targets, node.value, bindings)
+            continue
+        if isinstance(node, ast.AnnAssign):
+            bind_assignment([node.target], node.value, bindings)
+            continue
+        extracted = None
+        if isinstance(node, ast.Assert):
+            extracted = assertion_to_test(node.test, function_name, len(tests) + 1, bindings)
+        elif isinstance(node, ast.With):
+            extracted = raises_to_test(node, function_name, len(tests) + 1, bindings)
+        elif isinstance(node, ast.If):
+            extract_statement_tests(node.body, function_name, tests, dict(bindings))
+            extract_statement_tests(node.orelse, function_name, tests, dict(bindings))
+            continue
+        if extracted:
+            tests.append(extracted)
+
+
+def bind_assignment(targets, value, bindings):
+    try:
+        resolved = literal(value, bindings)
+    except ValueError:
+        return
+    for target in targets:
+        if isinstance(target, ast.Name):
+            bindings[target.id] = resolved
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(resolved, list):
+            for item, item_value in zip(target.elts, resolved):
+                if isinstance(item, ast.Name):
+                    bindings[item.id] = item_value
 
 
 def assertion_to_test(node, function_name, index, bindings=None):
@@ -165,6 +193,12 @@ def literal_fixtures(tree):
                 except ValueError:
                     pass
                 break
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Yield):
+                try:
+                    fixtures[node.name] = literal(statement.value.value)
+                except ValueError:
+                    pass
+                break
     return fixtures
 
 
@@ -212,6 +246,8 @@ def parameter_rows(node, width):
     for item in node.elts:
         if width == 1:
             rows.append([literal(item)])
+        elif isinstance(item, ast.Call) and call_name(item.func) == "pytest.param":
+            rows.append([literal(value) for value in item.args[:width]])
         elif isinstance(item, (ast.List, ast.Tuple)):
             rows.append([literal(value) for value in item.elts])
         else:
@@ -223,6 +259,13 @@ def literal(node, bindings=None):
     bindings = bindings or {}
     if isinstance(node, ast.Name) and node.id in bindings:
         return bindings[node.id]
+    if isinstance(node, ast.Subscript):
+        target = literal(node.value, bindings)
+        key = literal(node.slice, bindings)
+        try:
+            return target[key]
+        except Exception as error:
+            raise ValueError(f"unsupported subscript: {error}") from error
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
@@ -233,6 +276,9 @@ def literal(node, bindings=None):
         return [literal(item, bindings) for item in node.elts]
     if isinstance(node, ast.Dict):
         return {literal(key, bindings): literal(value, bindings) for key, value in zip(node.keys, node.values)}
+    if isinstance(node, ast.Call) and call_name(node.func) == "pytest.param":
+        values = [literal(arg, bindings) for arg in node.args]
+        return values[0] if len(values) == 1 else values
     raise ValueError(f"unsupported literal: {type(node).__name__}")
 
 

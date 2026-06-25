@@ -32,8 +32,19 @@ npx patchproof keygen --issuer your-org --key-id 2026-rotation-1
 Validate the configured host before launch:
 
 ```powershell
+npm run security:check
+npm run production:check
 npx patchproof doctor --production
 ```
+
+If runner hosts must be dedicated by policy, set:
+
+```text
+PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true
+PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated
+```
+
+With that requirement enabled, `patchproof doctor --production` fails until the dedicated-host declaration is present.
 
 ## Local Container Run
 
@@ -107,6 +118,8 @@ npm run runner -- --isolation docker
 ```
 
 This adds Docker's `--runtime` flag in addition to the default no-network/read-only/non-root/no-new-privileges/cap-drop/PID/memory/CPU limits. The runtime must already be installed and configured on the runner host.
+
+Treat Docker socket access as root-equivalent. Use dedicated runner hosts or VMs, keep control-plane secrets off those hosts, and do not co-locate unrelated untrusted workloads.
 
 Run retention cleanup:
 

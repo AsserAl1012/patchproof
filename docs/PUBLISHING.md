@@ -6,6 +6,8 @@
 
 ```powershell
 npm run check
+npm run security:check
+npm run production:check
 npm run release:check
 npm test
 npm run smoke
@@ -14,7 +16,15 @@ docker compose config
 node bin/patchproof.js doctor --production --skip-service-health
 ```
 
-`docker compose config` requires `PATCHPROOF_SECRET_KEY` to be set to at least 32 random characters. Generate deployment values with `node bin/patchproof.js keygen` before local release checks or `npx patchproof keygen` after publishing. Set `PATCHPROOF_DOCKER_GID` to the host Docker socket group ID when it is not `0`.
+On a Windows development machine without host Node/npm, run the service-backed integration through Docker:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\integration-services-docker.ps1
+```
+
+`npm run security:check` validates static security invariants such as disabled browser execution, no `unsafe-eval`, Docker default isolation, queue lease/ack/retry/dead-letter behavior, hashed sessions, and signed/provenance release workflow coverage. `npm run production:check` validates `docker compose config`, Compose hardening flags, CI service-backed runner coverage, and OCI/npm publishing gates.
+
+`docker compose config` and `npm run production:check` require `PATCHPROOF_SECRET_KEY` to be set to at least 32 random characters unless the Docker CLI check is intentionally skipped in a containerized validation environment with `PATCHPROOF_SKIP_DOCKER_CLI_CHECK=true`. Generate deployment values with `node bin/patchproof.js keygen` before local release checks or `npx patchproof keygen` after publishing. Set `PATCHPROOF_DOCKER_GID` to the host Docker socket group ID when it is not `0`. If your release policy requires dedicated runner hosts, set `PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true`; `patchproof doctor --production` must then see `PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated`.
 
 2. Verify package contents:
 
@@ -89,7 +99,7 @@ Avoid claiming:
 
 - full formal verification;
 - safety for open hosted arbitrary-code execution;
-- whole-repository autonomous repair;
+- whole-repository autonomous repair beyond conservative static rewrites plus project-test certification;
 - autonomous production patching.
 
 ## Release Checklist
@@ -100,6 +110,8 @@ Avoid claiming:
 - CI is green.
 - `npm pack --dry-run` includes only intended files.
 - `npm publish --dry-run --access public` succeeds.
+- `npm run security:check` passes.
+- `npm run production:check` passes.
 - `npm run release:check` confirms version metadata is aligned.
 - Release workflow uploads npm package, SBOM, checksums, and sample certificate artifacts.
 - CI service job passes against Postgres migrations, Redis queue lease/ack behavior, and Docker image build.
@@ -112,6 +124,14 @@ Avoid claiming:
 - Project runs queue and complete through the runner path.
 - Account invitation, password reset, and session-revocation APIs work.
 - `patchproof test` and `run --apply --verify-command` run the configured repository test command after a certified patch is applied.
+- `patchproof detect --sarif --out patchproof-results.sarif` exports repository findings and suppression fingerprints.
+- `patchproof repair-repo --dry-run` previews conservative repository-level static repairs.
+- `patchproof repair-repo --dry-run --finding <fingerprint>` previews one reviewed finding.
+- `patchproof repair-repo --apply --run-tests` can certify supported static repairs with the configured project command.
+- `patchproof test --install --build` runs configured install/build/test project commands.
+- C/C++ repositories are inspected, statically detected, and eligible for conservative `repair-repo` safety rewrites only for supported local fixed-array destinations; this is not marketed as semantic C/C++ verification.
+- Browser Repair Lab model generation is tested with provider setup checks and server-side candidate generation paths.
+- Repository repair reports include `semanticClaim: false`, selection filters, skipped repairs, write-policy metadata, and preserved line endings/BOMs.
 - Compose includes Postgres, Redis, MinIO, API, and runner services.
 - `/readyz` reports backing service readiness.
 - GitHub webhook signatures are verified.

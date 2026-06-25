@@ -57,6 +57,7 @@ test("certificate CLI works from an action checkout without installed dependenci
   await mkdir(join(dir, "sandbox"), { recursive: true });
   await Promise.all([
     copyFile("engine.js", join(dir, "engine.js")),
+    copyFile("examples.js", join(dir, "examples.js")),
     copyFile("runtime.js", join(dir, "runtime.js")),
     copyFile("python-examples.js", join(dir, "python-examples.js")),
     copyFile("sandbox/hosted-runner.js", join(dir, "sandbox", "hosted-runner.js")),
@@ -174,6 +175,113 @@ test("CLI detects repo-wide bug signals without applying repairs", async () => {
   const report = JSON.parse(result.stdout);
   assert.equal(report.summary.highestSeverity, "high");
   assert.ok(report.findings.some((finding) => finding.title === "Mutable default argument"));
+});
+
+test("CLI previews and applies repository static repairs", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-repair-"));
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "items.py"), `def add_item(items, item):
+    return items.append(item)
+`, "utf8");
+  await writeFile(join(repo, "test-command.js"), `import { readFileSync } from "node:fs";
+const source = readFileSync("src/items.py", "utf8");
+if (!source.includes("return items")) process.exit(2);
+`, "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: python
+  testCommand: node test-command.js
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  const preview = spawnSync(node, ["bin/patchproof.js", "repair-repo", "--repo", repo, "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(preview.status, 0, preview.stderr || preview.stdout);
+  const previewReport = JSON.parse(preview.stdout);
+  assert.equal(previewReport.status, "preview");
+  assert.match(await readFile(join(repo, "src", "items.py"), "utf8"), /return items\.append/);
+
+  const apply = spawnSync(node, ["bin/patchproof.js", "repair-repo", "--repo", repo, "--apply", "--run-tests", "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(apply.status, 0, apply.stderr || apply.stdout);
+  const applyReport = JSON.parse(apply.stdout);
+  assert.equal(applyReport.status, "certified");
+  assert.equal(applyReport.projectTest.ok, true);
+  assert.match(await readFile(join(repo, "src", "items.py"), "utf8"), /return items\s*$/m);
+});
+
+test("CLI detect can emit SARIF and suppress known findings", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "patchproof-repo-detect-sarif-"));
+  const sarifPath = join(repo, "patchproof.sarif");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "cache.py"), `def remember(value, seen=[]):
+    seen.append(value)
+    return seen
+`, "utf8");
+  await writeFile(join(repo, ".patchproofignore"), "static-python:Mutable default argument@src/cache.py\n", "utf8");
+
+  const suppressed = spawnSync(node, [
+    "bin/patchproof.js",
+    "detect",
+    "--repo",
+    repo,
+    "--json",
+    "--no-fail-on-findings"
+  ], { encoding: "utf8" });
+  assert.equal(suppressed.status, 0, suppressed.stderr || suppressed.stdout);
+  const suppressedReport = JSON.parse(suppressed.stdout);
+  assert.equal(suppressedReport.summary.suppressedFindings, 1);
+  assert.equal(suppressedReport.summary.highestSeverity, "medium");
+
+  const sarif = spawnSync(node, [
+    "bin/patchproof.js",
+    "detect",
+    "--repo",
+    repo,
+    "--sarif",
+    "--no-default-suppressions",
+    "--out",
+    sarifPath
+  ], { encoding: "utf8" });
+  assert.equal(sarif.status, 6, sarif.stderr || sarif.stdout);
+  const sarifReport = JSON.parse(await readFile(sarifPath, "utf8"));
+  assert.equal(sarifReport.version, "2.1.0");
+  assert.ok(sarifReport.runs[0].results.some((result) => result.ruleId.includes("static-python")));
+});
+
+test("CLI model-check validates provider setup and prompt budget", () => {
+  const disabled = spawnSync(node, ["bin/patchproof.js", "model-check", "--scenario", "clamp-range", "--json"], {
+    encoding: "utf8"
+  });
+  assert.equal(disabled.status, 0, disabled.stderr || disabled.stdout);
+  const disabledReport = JSON.parse(disabled.stdout);
+  assert.equal(disabledReport.provider, "disabled");
+  assert.ok(disabledReport.usage.promptChars > 0);
+
+  const configured = spawnSync(node, [
+    "bin/patchproof.js",
+    "model-check",
+    "--scenario",
+    "clamp-range",
+    "--model-provider",
+    "openai-compatible",
+    "--model-base-url",
+    "https://example.invalid/v1",
+    "--model-name",
+    "repair-model",
+    "--json"
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, PATCHPROOF_MODEL_API_KEY: "test-key" }
+  });
+  assert.equal(configured.status, 0, configured.stderr || configured.stdout);
+  const configuredReport = JSON.parse(configured.stdout);
+  assert.equal(configuredReport.provider, "openai-compatible");
+  assert.equal(configuredReport.ok, true);
 });
 
 test("CLI initializes and doctors a repository", async () => {

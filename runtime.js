@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { createInputFromExample as createJavaScriptInputFromExample, examples as javaScriptExamples } from "./examples.js";
 import {
-  createInputFromExample as createJavaScriptInputFromExample,
-  examples as javaScriptExamples,
   runPatchProof as runJavaScriptPatchProof,
   signCertificate,
   verifyCertificateSignature,

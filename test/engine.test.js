@@ -178,6 +178,61 @@ test("validates supplied model candidates and replays their provenance", () => {
   assert.equal(verifyCertificate(result.certificate).valid, true);
 });
 
+test("local templates cover simple JavaScript increment repairs", () => {
+  const result = runPatchProof({
+    source: `function increment(value) {
+  return value;
+}`,
+    tests: [
+      { name: "increments zero", args: [0], expect: 1 },
+      { name: "increments positive", args: [4], expect: 5 }
+    ],
+    bugReport: "increment should add one",
+    mayChange: "true",
+    postcondition: "result === args[0] + 1"
+  });
+
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.selected.templateId, "missing-increment-return");
+});
+
+test("local templates cover simple JavaScript decrement repairs", () => {
+  const result = runPatchProof({
+    source: `function decrement(value) {
+  return value;
+}`,
+    tests: [
+      { name: "decrements zero", args: [0], expect: -1 },
+      { name: "decrements positive", args: [4], expect: 3 }
+    ],
+    bugReport: "decrement should subtract one",
+    mayChange: "true",
+    postcondition: "result === args[0] - 1"
+  });
+
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.selected.templateId, "missing-decrement-return");
+});
+
+test("local templates return arrays after push mutations", () => {
+  const result = runPatchProof({
+    source: `function addItem(items, value) {
+  return items.push(value);
+}`,
+    tests: [
+      { name: "adds to empty", args: [[], 1], expect: [1] },
+      { name: "adds to existing", args: [[1, 2], 3], expect: [1, 2, 3] }
+    ],
+    bugReport: "push mutates the array but returns the length; return the updated array",
+    precondition: "Array.isArray(args[0])",
+    mayChange: "true",
+    postcondition: "Array.isArray(result) && result.length === args[0].length + 1"
+  });
+
+  assert.equal(result.certificate.status, "certified");
+  assert.equal(result.selected.templateId, "push-return-array");
+});
+
 test("honors configured domain, candidate, and evidence limits", () => {
   const example = examples[0];
   const result = runPatchProof({

@@ -1,4 +1,4 @@
-import { examples } from "./engine.js";
+import { examples } from "./examples.js";
 import { pythonExamples } from "./python-examples.js";
 
 const allExamples = [...examples, ...pythonExamples];
@@ -12,6 +12,16 @@ const elements = {
   preconditionInput: document.querySelector("#preconditionInput"),
   mayChangeInput: document.querySelector("#mayChangeInput"),
   postconditionInput: document.querySelector("#postconditionInput"),
+  modelProviderInput: document.querySelector("#modelProviderInput"),
+  modelNameInput: document.querySelector("#modelNameInput"),
+  modelBaseUrlInput: document.querySelector("#modelBaseUrlInput"),
+  modelApiKeyEnvInput: document.querySelector("#modelApiKeyEnvInput"),
+  modelCandidateCountInput: document.querySelector("#modelCandidateCountInput"),
+  modelPromptBudgetInput: document.querySelector("#modelPromptBudgetInput"),
+  modelUseInput: document.querySelector("#modelUseInput"),
+  modelStatusLabel: document.querySelector("#modelStatusLabel"),
+  modelCheckButton: document.querySelector("#modelCheckButton"),
+  modelCheckOutput: document.querySelector("#modelCheckOutput"),
   runButton: document.querySelector("#runButton"),
   dashboardRunButton: document.querySelector("#dashboardRunButton"),
   applyPatchButton: document.querySelector("#applyPatchButton"),
@@ -62,6 +72,27 @@ const elements = {
   opsSessionInput: document.querySelector("#opsSessionInput"),
   runnerLabel: document.querySelector("#runnerLabel"),
   opsOutput: document.querySelector("#opsOutput"),
+  repoRootInput: document.querySelector("#repoRootInput"),
+  repoConfigInput: document.querySelector("#repoConfigInput"),
+  repoCommandInput: document.querySelector("#repoCommandInput"),
+  repoRunTestsInput: document.querySelector("#repoRunTestsInput"),
+  repoInstallInput: document.querySelector("#repoInstallInput"),
+  repoBuildInput: document.querySelector("#repoBuildInput"),
+  repoForceInitInput: document.querySelector("#repoForceInitInput"),
+  repoInspectButton: document.querySelector("#repoInspectButton"),
+  repoInitButton: document.querySelector("#repoInitButton"),
+  repoDetectButton: document.querySelector("#repoDetectButton"),
+  repoRepairPreviewButton: document.querySelector("#repoRepairPreviewButton"),
+  repoExportJsonButton: document.querySelector("#repoExportJsonButton"),
+  repoExportSarifButton: document.querySelector("#repoExportSarifButton"),
+  repoStatusLabel: document.querySelector("#repoStatusLabel"),
+  repoSuggestionCount: document.querySelector("#repoSuggestionCount"),
+  repoTargetCount: document.querySelector("#repoTargetCount"),
+  repoFindingCount: document.querySelector("#repoFindingCount"),
+  repoSuggestionList: document.querySelector("#repoSuggestionList"),
+  repoTargetList: document.querySelector("#repoTargetList"),
+  repoFindingList: document.querySelector("#repoFindingList"),
+  repoOutput: document.querySelector("#repoOutput"),
   viewLinks: document.querySelectorAll("[data-view-link]"),
   viewSections: document.querySelectorAll("[data-view]")
 };
@@ -76,6 +107,7 @@ let auth = readAuth();
 let selectedProject = null;
 let runPollTimer = null;
 let pendingProjectRunId = null;
+let lastRepositoryDetectionReport = null;
 let selectedRunId = null;
 
 function init() {
@@ -133,6 +165,7 @@ function bindEvents() {
   elements.downloadCertButton.addEventListener("click", downloadCertificate);
   elements.exportRunsButton.addEventListener("click", exportRuns);
   elements.importCertInput.addEventListener("change", importCertificate);
+  elements.modelCheckButton.addEventListener("click", checkModelSetup);
   elements.bootstrapButton.addEventListener("click", bootstrapAdmin);
   elements.loginButton.addEventListener("click", login);
   elements.logoutButton.addEventListener("click", logout);
@@ -149,6 +182,12 @@ function bindEvents() {
   elements.revokeSessionButton.addEventListener("click", revokeSession);
   elements.loadAuditButton.addEventListener("click", loadAudit);
   elements.cancelRunButton.addEventListener("click", cancelSelectedRun);
+  elements.repoInspectButton.addEventListener("click", inspectLocalRepository);
+  elements.repoInitButton.addEventListener("click", initializeLocalRepository);
+  elements.repoDetectButton.addEventListener("click", detectLocalRepository);
+  elements.repoRepairPreviewButton.addEventListener("click", previewRepositoryRepairs);
+  elements.repoExportJsonButton.addEventListener("click", exportRepositoryJson);
+  elements.repoExportSarifButton.addEventListener("click", exportRepositorySarif);
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => activateTab(tab.dataset.tab));
   });
@@ -173,6 +212,10 @@ function activateViewFromHash() {
   const hash = window.location.hash || "#repair";
   if (hash === "#projects" || hash === "#private-workspace") {
     showView("projects", { hash: "#projects" });
+    return;
+  }
+  if (hash === "#repository" || hash === "#repository-workspace") {
+    showView("repository", { hash: "#repository" });
     return;
   }
   showView("repair", {
@@ -205,15 +248,7 @@ function runEngine() {
   elements.runState.textContent = "Running";
   elements.runButton.disabled = true;
 
-  runVerifier({
-    language: elements.languageInput.value,
-    source: elements.sourceInput.value,
-    testsText: elements.testsInput.value,
-    bugReport: elements.bugReportInput.value,
-    preconditionText: elements.preconditionInput.value,
-    mayChangeText: elements.mayChangeInput.value,
-    postconditionText: elements.postconditionInput.value
-  })
+  runVerifier(repairPayloadFromUi())
     .then((result) => {
       lastResult = result;
       selectedCandidateId = result.selected.id;
@@ -232,7 +267,79 @@ function runEngine() {
 }
 
 async function runVerifier(payload) {
-  return runViaApi(payload);
+  return runViaApi(await maybeAttachBrowserModelCandidates(payload));
+}
+
+function repairPayloadFromUi() {
+  return {
+    language: elements.languageInput.value,
+    source: elements.sourceInput.value,
+    testsText: elements.testsInput.value,
+    bugReport: elements.bugReportInput.value,
+    preconditionText: elements.preconditionInput.value,
+    mayChangeText: elements.mayChangeInput.value,
+    postconditionText: elements.postconditionInput.value
+  };
+}
+
+function modelSettingsFromUi() {
+  return {
+    provider: elements.modelProviderInput.value,
+    model: elements.modelNameInput.value.trim(),
+    baseUrl: elements.modelBaseUrlInput.value.trim(),
+    apiKeyEnv: elements.modelApiKeyEnvInput.value.trim() || "PATCHPROOF_MODEL_API_KEY",
+    maxCandidates: Number(elements.modelCandidateCountInput.value || 4),
+    maxPromptChars: Number(elements.modelPromptBudgetInput.value || 20000)
+  };
+}
+
+async function maybeAttachBrowserModelCandidates(payload) {
+  if (!elements.modelUseInput?.checked || elements.modelProviderInput.value === "disabled") return payload;
+  elements.modelStatusLabel.textContent = "Generating";
+  const response = await api("/api/model/generate", {
+    method: "POST",
+    auth: false,
+    body: {
+      settings: modelSettingsFromUi(),
+      input: payload
+    }
+  });
+  elements.modelStatusLabel.textContent = response.candidates.length ? "Generated" : "No candidates";
+  elements.modelCheckOutput.textContent = JSON.stringify(response, null, 2);
+  return {
+    ...payload,
+    candidatePatches: response.candidates.map((candidate) => ({
+      source: candidate.source,
+      title: candidate.title,
+      rationale: candidate.rationale,
+      generator: candidate.generator,
+      provenance: candidate.provenance
+    }))
+  };
+}
+
+async function checkModelSetup() {
+  elements.modelStatusLabel.textContent = "Checking";
+  elements.modelCheckButton.disabled = true;
+  try {
+    const response = await api("/api/model/check", {
+      method: "POST",
+      auth: false,
+      body: {
+        settings: {
+          ...modelSettingsFromUi()
+        },
+        input: repairPayloadFromUi()
+      }
+    });
+    elements.modelStatusLabel.textContent = response.ok ? "Ready" : "Needs settings";
+    elements.modelCheckOutput.textContent = JSON.stringify(response, null, 2);
+  } catch (error) {
+    elements.modelStatusLabel.textContent = "Error";
+    elements.modelCheckOutput.textContent = error.stack || error.message;
+  } finally {
+    elements.modelCheckButton.disabled = false;
+  }
 }
 
 async function runViaApi(payload) {
@@ -330,7 +437,7 @@ function activateTab(name) {
 async function copyCertificate() {
   const text = lastResult ? JSON.stringify(lastResult.certificate, null, 2) : elements.certificateOutput.textContent;
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     elements.runState.textContent = "Copied";
   } catch {
     elements.runState.textContent = "Copy failed";
@@ -358,6 +465,19 @@ function downloadCertificate() {
   link.remove();
   URL.revokeObjectURL(link.href);
   elements.runState.textContent = "Downloaded";
+}
+
+function downloadJson(filename, value) {
+  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], {
+    type: "application/json"
+  });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
 }
 
 function saveRun(certificate) {
@@ -452,6 +572,362 @@ async function importCertificate(event) {
   } finally {
     event.target.value = "";
   }
+}
+
+async function inspectLocalRepository() {
+  setRepositoryBusy("Inspecting");
+  try {
+    const response = await api("/api/repository/inspect", {
+      method: "POST",
+      body: repositoryRequestBody(),
+      auth: false
+    });
+    lastRepositoryDetectionReport = null;
+    renderRepositoryInspection(response.report);
+    resetRepositoryFindings("Run detection to highlight likely bugs.");
+    elements.repoStatusLabel.textContent = "Inspected";
+  } catch (error) {
+    renderRepositoryError(error);
+  }
+}
+
+async function initializeLocalRepository() {
+  setRepositoryBusy("Creating config");
+  try {
+    const response = await api("/api/repository/init", {
+      method: "POST",
+      body: {
+        ...repositoryRequestBody(),
+        force: elements.repoForceInitInput.checked
+      },
+      auth: false
+    });
+    lastRepositoryDetectionReport = null;
+    renderRepositoryInspection(response.result.report);
+    resetRepositoryFindings("Run detection after reviewing the generated config.");
+    elements.repoOutput.textContent = JSON.stringify({
+      config: response.result.config,
+      created: response.result.created,
+      overwritten: response.result.overwritten,
+      next: "Review generated target fields, then load a target into the Repair Lab."
+    }, null, 2);
+    elements.repoStatusLabel.textContent = response.result.overwritten ? "Config updated" : "Config created";
+  } catch (error) {
+    renderRepositoryError(error);
+  }
+}
+
+async function detectLocalRepository() {
+  setRepositoryBusy("Detecting");
+  try {
+    const response = await api("/api/repository/detect", {
+      method: "POST",
+      body: {
+        ...repositoryRequestBody(),
+        runTests: elements.repoRunTestsInput.checked,
+        install: elements.repoInstallInput.checked,
+        build: elements.repoBuildInput.checked,
+        command: elements.repoCommandInput.value.trim() || undefined
+      },
+      auth: false
+    });
+    lastRepositoryDetectionReport = response.report;
+    renderRepositoryInspection(response.report.inspection);
+    renderRepositoryFindings(response.report);
+    elements.repoOutput.textContent = JSON.stringify(response.report, null, 2);
+    elements.repoStatusLabel.textContent = response.report.summary.highestSeverity === "none" ? "Clean" : "Findings";
+  } catch (error) {
+    renderRepositoryError(error);
+  }
+}
+
+async function previewRepositoryRepairs(selection = {}) {
+  setRepositoryBusy("Repair preview");
+  try {
+    const response = await api("/api/repository/repair", {
+      method: "POST",
+      body: {
+        ...repositoryRequestBody(),
+        dryRun: true,
+        apply: false,
+        runTests: elements.repoRunTestsInput.checked,
+        install: elements.repoInstallInput.checked,
+        build: elements.repoBuildInput.checked,
+        command: elements.repoCommandInput.value.trim() || undefined,
+        fingerprints: selection.fingerprints,
+        categories: selection.categories,
+        files: selection.files
+      },
+      auth: false
+    });
+    lastRepositoryDetectionReport = {
+      ...response.report.detectionBefore,
+      repoRoot: response.report.repoRoot,
+      generatedAt: response.report.generatedAt
+    };
+    renderRepositoryFindings({
+      summary: response.report.detectionBefore.summary,
+      findings: response.report.detectionBefore.findings || []
+    });
+    elements.repoOutput.textContent = JSON.stringify(response.report, null, 2);
+    elements.repoStatusLabel.textContent = response.report.changes.length ? "Repair preview" : "No repairs";
+  } catch (error) {
+    renderRepositoryError(error);
+  } finally {
+    clearRepositoryBusy();
+  }
+}
+
+function repositoryRequestBody() {
+  return {
+    repoRoot: elements.repoRootInput.value.trim() || ".",
+    configPath: elements.repoConfigInput.value.trim() || "patchproof.yml"
+  };
+}
+
+function setRepositoryBusy(label) {
+  elements.repoStatusLabel.textContent = label;
+  elements.repoInspectButton.disabled = true;
+  elements.repoInitButton.disabled = true;
+  elements.repoDetectButton.disabled = true;
+  elements.repoRepairPreviewButton.disabled = true;
+  elements.repoExportJsonButton.disabled = true;
+  elements.repoExportSarifButton.disabled = true;
+}
+
+function clearRepositoryBusy() {
+  elements.repoInspectButton.disabled = false;
+  elements.repoInitButton.disabled = false;
+  elements.repoDetectButton.disabled = false;
+  elements.repoRepairPreviewButton.disabled = false;
+  elements.repoExportJsonButton.disabled = false;
+  elements.repoExportSarifButton.disabled = false;
+}
+
+function renderRepositoryInspection(report) {
+  clearRepositoryBusy();
+  renderRepositorySuggestions(report);
+  const targets = report.patchproof?.targets || [];
+  elements.repoTargetCount.textContent = `${targets.length} target${targets.length === 1 ? "" : "s"}`;
+  if (!targets.length) {
+    elements.repoTargetList.className = "dashboard-list empty-state";
+    elements.repoTargetList.textContent = report.patchproof?.configured
+      ? "No configured targets were found in patchproof.yml."
+      : "No patchproof.yml found. Run `patchproof init` from the CLI to create one.";
+  } else {
+    elements.repoTargetList.className = "dashboard-list";
+    elements.repoTargetList.innerHTML = "";
+    for (const target of targets) {
+      const button = document.createElement("button");
+      button.className = "dashboard-item";
+      button.innerHTML = `<strong>${escapeHtml(target.id)}</strong><span>${escapeHtml(target.language || "unknown")} - ${escapeHtml(target.source || "no source")} - ${escapeHtml(target.functionName || "no function")}</span>`;
+      button.addEventListener("click", () => loadRepositoryTarget(target.id));
+      elements.repoTargetList.appendChild(button);
+    }
+  }
+  elements.repoOutput.textContent = JSON.stringify({
+    repoRoot: report.repoRoot,
+    languages: report.languages,
+    frameworks: report.frameworks,
+    testCommands: report.testCommands,
+    patchproof: report.patchproof,
+    suggestions: report.suggestions
+  }, null, 2);
+}
+
+function renderRepositorySuggestions(report) {
+  const suggestions = [
+    ...(report.suggestions?.candidateSourceFiles || []).slice(0, 8).map((file) => ({
+      kind: "source",
+      text: file
+    })),
+    ...(report.suggestions?.candidatePatchProofTests || []).slice(0, 6).map((file) => ({
+      kind: "patchproof tests",
+      text: file
+    })),
+    ...(report.suggestions?.candidateProjectTests || []).slice(0, 6).map((file) => ({
+      kind: "project tests",
+      text: file
+    })),
+    ...(report.suggestions?.next || []).slice(0, 6).map((text) => ({
+      kind: "next",
+      text
+    }))
+  ];
+  elements.repoSuggestionCount.textContent = `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}`;
+  if (!suggestions.length) {
+    elements.repoSuggestionList.className = "dashboard-list empty-state";
+    elements.repoSuggestionList.textContent = "No onboarding suggestions were produced for this repository.";
+    return;
+  }
+  elements.repoSuggestionList.className = "dashboard-list";
+  elements.repoSuggestionList.innerHTML = "";
+  for (const suggestion of suggestions) {
+    const item = document.createElement("article");
+    item.className = "suggestion-item";
+    item.innerHTML = `<strong>${escapeHtml(suggestion.kind)}</strong><span>${escapeHtml(suggestion.text)}</span>`;
+    elements.repoSuggestionList.appendChild(item);
+  }
+}
+
+function renderRepositoryFindings(report) {
+  const findings = report.findings || [];
+  elements.repoFindingCount.textContent = `${findings.length} finding${findings.length === 1 ? "" : "s"}`;
+  if (!findings.length) {
+    elements.repoFindingList.className = "dashboard-list empty-state";
+    elements.repoFindingList.textContent = report.summary.suppressedFindings
+      ? `No active findings. ${report.summary.suppressedFindings} finding(s) suppressed.`
+      : "No bug signals were detected.";
+    return;
+  }
+  elements.repoFindingList.className = "dashboard-list";
+  elements.repoFindingList.innerHTML = "";
+  for (const finding of findings.slice(0, 50)) {
+    const item = document.createElement("article");
+    item.className = `finding-item severity-${finding.severity}`;
+    const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""}` : "repository";
+    item.innerHTML = `
+      <div class="finding-top">
+        <strong>${escapeHtml(finding.title)}</strong>
+        <span>${escapeHtml(finding.severity)}</span>
+      </div>
+      <p>${escapeHtml(location)}</p>
+      <p>${escapeHtml(finding.message)}</p>
+      ${finding.evidence ? `<p class="finding-evidence">${escapeHtml(finding.evidence)}</p>` : ""}
+      ${finding.suggestion ? `<p class="finding-suggestion">${escapeHtml(finding.suggestion)}</p>` : ""}
+      <code>${escapeHtml(finding.fingerprint || "")}</code>
+      <div class="finding-actions">
+        <button class="small-button" type="button" data-suppression="${escapeHtml(suppressionRuleForFinding(finding))}">Copy suppression</button>
+        ${finding.fingerprint ? `<button class="small-button" type="button" data-repair-fingerprint="${escapeHtml(finding.fingerprint)}">Preview this repair</button>` : ""}
+      </div>
+    `;
+    item.querySelector("[data-suppression]")?.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await copyRepositorySuppression(event.currentTarget.dataset.suppression || "");
+    });
+    item.querySelector("[data-repair-fingerprint]")?.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await previewRepositoryRepairs({ fingerprints: [event.currentTarget.dataset.repairFingerprint] });
+    });
+    elements.repoFindingList.appendChild(item);
+  }
+}
+
+function resetRepositoryFindings(message) {
+  elements.repoFindingCount.textContent = "0 findings";
+  elements.repoFindingList.className = "dashboard-list empty-state";
+  elements.repoFindingList.textContent = message;
+}
+
+function suppressionRuleForFinding(finding) {
+  const base = `${finding.category}:${finding.title}`;
+  return finding.file ? `${base}@${finding.file}` : base;
+}
+
+async function copyRepositorySuppression(rule) {
+  try {
+    await writeClipboardText(rule);
+    elements.repoStatusLabel.textContent = "Suppression copied";
+  } catch {
+    elements.repoOutput.textContent = `Add this line to .patchproofignore:\n\n${rule}\n`;
+    elements.repoStatusLabel.textContent = "Suppression ready";
+  }
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the textarea path for local/dev browser contexts without clipboard permission.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard copy was blocked.");
+}
+
+function exportRepositoryJson() {
+  if (!lastRepositoryDetectionReport) {
+    elements.repoStatusLabel.textContent = "Run detection first";
+    return;
+  }
+  downloadJson("patchproof-detect-report.json", lastRepositoryDetectionReport);
+  elements.repoOutput.textContent = JSON.stringify(lastRepositoryDetectionReport, null, 2);
+  elements.repoStatusLabel.textContent = "JSON exported";
+}
+
+async function exportRepositorySarif() {
+  setRepositoryBusy("Exporting SARIF");
+  try {
+    const response = await api("/api/repository/detect", {
+      method: "POST",
+      body: {
+        ...repositoryRequestBody(),
+        runTests: elements.repoRunTestsInput.checked,
+        install: elements.repoInstallInput.checked,
+        build: elements.repoBuildInput.checked,
+        command: elements.repoCommandInput.value.trim() || undefined,
+        format: "sarif"
+      },
+      auth: false
+    });
+    lastRepositoryDetectionReport = response.report;
+    renderRepositoryInspection(response.report.inspection);
+    renderRepositoryFindings(response.report);
+    downloadJson("patchproof-detect-report.sarif", response.sarif);
+    elements.repoOutput.textContent = JSON.stringify(response.sarif, null, 2);
+    elements.repoStatusLabel.textContent = "SARIF exported";
+  } catch (error) {
+    renderRepositoryError(error);
+  } finally {
+    clearRepositoryBusy();
+  }
+}
+
+async function loadRepositoryTarget(targetId) {
+  setRepositoryBusy("Loading target");
+  try {
+    const response = await api("/api/repository/target", {
+      method: "POST",
+      body: { ...repositoryRequestBody(), targetId },
+      auth: false
+    });
+    loadInputIntoRepairLab(response.input);
+    elements.repoStatusLabel.textContent = "Target loaded";
+    showView("repair", { hash: "#repair" });
+  } catch (error) {
+    renderRepositoryError(error);
+  } finally {
+    clearRepositoryBusy();
+  }
+}
+
+function loadInputIntoRepairLab(input) {
+  elements.languageInput.value = input.language || "javascript";
+  elements.sourceInput.value = input.source || "";
+  elements.testsInput.value = input.testsText || JSON.stringify(input.tests || [], null, 2);
+  elements.bugReportInput.value = input.bugReport || "";
+  elements.preconditionInput.value = input.preconditionText || input.precondition || "";
+  elements.mayChangeInput.value = input.mayChangeText || input.mayChange || "";
+  elements.postconditionInput.value = input.postconditionText || input.postcondition || "";
+  elements.runState.textContent = `Loaded ${input.repository?.target || "target"}`;
+  elements.functionName.textContent = input.repository?.function || "not compiled";
+}
+
+function renderRepositoryError(error) {
+  clearRepositoryBusy();
+  elements.repoStatusLabel.textContent = "Error";
+  elements.repoOutput.textContent = error.stack || error.message;
 }
 
 async function bootstrapAdmin() {

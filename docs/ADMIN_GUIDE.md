@@ -31,7 +31,16 @@ npx patchproof keygen --issuer your-org --key-id 2026-rotation-1
 Validate a configured host before launch with:
 
 ```powershell
+npm run security:check
+npm run production:check
 npx patchproof doctor --production
+```
+
+To enforce dedicated runner hosts during production checks:
+
+```text
+PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true
+PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated
 ```
 
 Run migrations explicitly with:
@@ -125,6 +134,8 @@ PATCHPROOF_MODEL_NAME=...
 ```
 
 Candidate generation runs in the worker before validation. API keys are never sent into the isolated verifier.
+
+For local/server-backed Repair Lab use, the browser can request model generation through `/api/model/generate`; model credentials remain in the server environment and only candidate source plus hashed provenance reaches the verifier.
 
 Certificate issuer signing is optional. Set these variables on the API and runner when certificates need issuer authenticity in addition to replay reproducibility:
 

@@ -1,5 +1,7 @@
 import { examples, runPatchProof } from "../runtime.js";
 import { createPatchProofServer } from "../server.js";
+import { readFile } from "node:fs/promises";
+import { dirname, join, normalize } from "node:path";
 
 function runExample(example) {
   return runPatchProof({
@@ -23,6 +25,12 @@ for (const example of examples) {
   );
 }
 
+const browserGraph = await collectBrowserImports("app.js");
+if (browserGraph.has("engine.js") || browserGraph.has("runtime.js") || browserGraph.has("server.js")) {
+  throw new Error(`Browser graph imports Node-only module(s): ${[...browserGraph].join(", ")}`);
+}
+console.log(`browser: ok ${[...browserGraph].join(", ")}`);
+
 const server = createPatchProofServer();
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const { port } = server.address();
@@ -36,4 +44,21 @@ try {
   console.log(`http: ok ${baseUrl}`);
 } finally {
   server.close();
+}
+
+async function collectBrowserImports(entry, graph = new Set()) {
+  const file = normalize(entry).split("\\").join("/");
+  if (graph.has(file)) return graph;
+  graph.add(file);
+  const source = await readFile(file, "utf8");
+  if (/\bfrom\s+["']node:|\bimport\s+["']node:/.test(source)) {
+    throw new Error(`${file} imports a Node built-in from the browser module graph.`);
+  }
+  const imports = [...source.matchAll(/import\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g)]
+    .map((match) => match[1])
+    .filter((specifier) => specifier.startsWith("."));
+  for (const specifier of imports) {
+    await collectBrowserImports(normalize(join(dirname(file), specifier)).split("\\").join("/"), graph);
+  }
+  return graph;
 }

@@ -46,6 +46,10 @@ try {
     await inspectCommand(args.slice(1));
   } else if (command === "detect") {
     await detectCommand(args.slice(1));
+  } else if (command === "repair-repo") {
+    await repairRepoCommand(args.slice(1));
+  } else if (command === "model-check") {
+    await modelCheckCommand(args.slice(1));
   } else if (command === "targets") {
     await targetsCommand(args.slice(1));
   } else if (command === "test") {
@@ -229,6 +233,7 @@ async function productionDoctorCommand(doctorArgs) {
   );
 
   const runtime = process.env.PATCHPROOF_DOCKER_RUNTIME || "";
+  const requireHardenedRuntime = /^true|1|yes$/i.test(process.env.PATCHPROOF_REQUIRE_HARDENED_RUNTIME || "");
   if (runtime) {
     const runtimes = spawnSync("docker", ["info", "--format", "{{json .Runtimes}}"], {
       encoding: "utf8",
@@ -243,8 +248,30 @@ async function productionDoctorCommand(doctorArgs) {
         : dockerStartError(runtimes)
     );
   } else {
-    addProductionCheck(checks, "Docker runtime", "warn", "PATCHPROOF_DOCKER_RUNTIME is unset; Docker default runtime will be used.");
+    addProductionCheck(
+      checks,
+      "Docker runtime",
+      requireHardenedRuntime ? "error" : "warn",
+      requireHardenedRuntime
+        ? "PATCHPROOF_REQUIRE_HARDENED_RUNTIME is true, but PATCHPROOF_DOCKER_RUNTIME is unset."
+        : "PATCHPROOF_DOCKER_RUNTIME is unset; Docker default runtime will be used."
+    );
   }
+
+  addProductionCheck(
+    checks,
+    "Docker socket exposure",
+    process.env.PATCHPROOF_RUNNER_HOST_ISOLATION === "dedicated"
+      ? "ok"
+      : /^true|1|yes$/i.test(process.env.PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST || "")
+        ? "error"
+        : "warn",
+    process.env.PATCHPROOF_RUNNER_HOST_ISOLATION === "dedicated"
+      ? "runner host isolation declared as dedicated"
+      : /^true|1|yes$/i.test(process.env.PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST || "")
+        ? "PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST is true, but PATCHPROOF_RUNNER_HOST_ISOLATION is not dedicated."
+        : "Use a dedicated runner host/VM for Docker-socket deployments; do not co-host untrusted tenants."
+  );
 
   const nodeEnv = process.env.NODE_ENV || "";
   addProductionCheck(
@@ -348,17 +375,29 @@ async function testCommand(testArgs) {
   const command = readOption(testArgs, "--command");
   const timeoutSeconds = readOption(testArgs, "--timeout-seconds");
   const jsonMode = testArgs.includes("--json");
+  const install = testArgs.includes("--install");
+  const build = testArgs.includes("--build");
   const result = await runRepositoryTests({
     repoRoot,
     configPath,
     targetId,
     command,
+    install,
+    build,
     timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined
   });
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(`repository test command: ${result.command}`);
+    if (result.install) {
+      console.log(`install command: ${result.install.command}`);
+      console.log(`install ${result.install.ok ? "passed" : "failed"} in ${result.install.durationMs}ms`);
+    }
+    if (result.build) {
+      console.log(`build command: ${result.build.command}`);
+      console.log(`build ${result.build.ok ? "passed" : "failed"} in ${result.build.durationMs}ms`);
+    }
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     console.log(`test ${result.ok ? "passed" : "failed"} in ${result.durationMs}ms`);
@@ -392,25 +431,161 @@ async function detectCommand(detectArgs) {
   const timeoutSeconds = readOption(detectArgs, "--timeout-seconds");
   const maxFiles = readOption(detectArgs, "--max-files");
   const maxScanFiles = readOption(detectArgs, "--max-scan-files");
+  const suppressionsPath = readOption(detectArgs, "--suppressions");
+  const outPath = readOption(detectArgs, "--out");
+  const format = readOption(detectArgs, "--format");
   const jsonMode = detectArgs.includes("--json");
+  const sarifMode = detectArgs.includes("--sarif") || format === "sarif";
   const runTests = detectArgs.includes("--run-tests");
-  const { detectRepositoryBugs } = await import("../repository-adapter.js");
+  const install = detectArgs.includes("--install");
+  const build = detectArgs.includes("--build");
+  const noFail = detectArgs.includes("--no-fail-on-findings");
+  const { detectRepositoryBugs, repositoryDetectionToSarif } = await import("../repository-adapter.js");
   const report = await detectRepositoryBugs({
     repoRoot,
     configPath,
     command,
+    install,
+    build,
     runTests,
     timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
     maxFiles: maxFiles ? Number(maxFiles) : undefined,
-    maxScanFiles: maxScanFiles ? Number(maxScanFiles) : undefined
+    maxScanFiles: maxScanFiles ? Number(maxScanFiles) : undefined,
+    suppressionsPath,
+    defaultSuppressions: !detectArgs.includes("--no-default-suppressions")
   });
-  if (jsonMode) {
-    console.log(JSON.stringify(report, null, 2));
-    if (["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
+  const output = sarifMode ? repositoryDetectionToSarif(report) : report;
+  if (outPath) {
+    await mkdir(dirname(resolve(outPath)), { recursive: true });
+    await writeFile(outPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+  }
+  if (sarifMode || jsonMode) {
+    if (!outPath) console.log(JSON.stringify(output, null, 2));
+    else console.log(`${sarifMode ? "sarif" : "json"} report: ${outPath}`);
+    if (!noFail && ["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
     return;
   }
   printDetectReport(report);
-  if (["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
+  if (outPath) console.log(`json report: ${outPath}`);
+  if (!noFail && ["critical", "high"].includes(report.summary.highestSeverity)) process.exitCode = 6;
+}
+
+async function repairRepoCommand(repairArgs) {
+  const repoRoot = readOption(repairArgs, "--repo");
+  const configPath = readOption(repairArgs, "--config");
+  const command = readOption(repairArgs, "--command");
+  const timeoutSeconds = readOption(repairArgs, "--timeout-seconds");
+  const maxFiles = readOption(repairArgs, "--max-files");
+  const maxScanFiles = readOption(repairArgs, "--max-scan-files");
+  const maxRepairs = readOption(repairArgs, "--max-repairs");
+  const suppressionsPath = readOption(repairArgs, "--suppressions");
+  const outPath = readOption(repairArgs, "--out");
+  const fingerprints = readOptions(repairArgs, "--finding");
+  const categories = readOptions(repairArgs, "--category");
+  const files = readOptions(repairArgs, "--file");
+  const jsonMode = repairArgs.includes("--json");
+  const apply = repairArgs.includes("--apply");
+  const dryRun = repairArgs.includes("--dry-run") || !apply;
+  const runTests = repairArgs.includes("--run-tests");
+  const install = repairArgs.includes("--install");
+  const build = repairArgs.includes("--build");
+  const noRevert = repairArgs.includes("--no-revert-on-failure");
+  const { repairRepository } = await import("../repository-adapter.js");
+  const report = await repairRepository({
+    repoRoot,
+    configPath,
+    command,
+    install,
+    build,
+    runTests,
+    apply,
+    dryRun,
+    revertOnFailure: !noRevert,
+    timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
+    maxFiles: maxFiles ? Number(maxFiles) : undefined,
+    maxScanFiles: maxScanFiles ? Number(maxScanFiles) : undefined,
+    maxRepairs: maxRepairs ? Number(maxRepairs) : undefined,
+    fingerprints,
+    categories,
+    files,
+    suppressionsPath,
+    defaultSuppressions: !repairArgs.includes("--no-default-suppressions")
+  });
+  if (outPath) {
+    await mkdir(dirname(resolve(outPath)), { recursive: true });
+    await writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+  if (jsonMode) {
+    if (!outPath) console.log(JSON.stringify(report, null, 2));
+    else console.log(`repository repair report: ${outPath}`);
+  } else {
+    printRepositoryRepairReport(report);
+    if (outPath) console.log(`repository repair report: ${outPath}`);
+  }
+  if (["failed", "reverted-failed-tests"].includes(report.status)) process.exitCode = 7;
+}
+
+async function modelCheckCommand(modelArgs) {
+  const jsonMode = modelArgs.includes("--json");
+  const scenarioId = readOption(modelArgs, "--scenario");
+  const inputPath = readOption(modelArgs, "--input");
+  const targetId = readOption(modelArgs, "--target");
+  const repoRoot = readOption(modelArgs, "--repo");
+  const configPath = readOption(modelArgs, "--config");
+  let input = null;
+  if (scenarioId) input = inputForScenario(scenarioId);
+  else if (inputPath) input = await inputFromFile(inputPath);
+  else if (targetId) input = await inputFromRepositoryTarget({ repoRoot, configPath, targetId });
+
+  const settings = await modelSettingsForRun({ args: modelArgs, repoRoot, configPath, targetId });
+  const { estimateModelUsage, normalizeModelProvider } = await import("../saas/model-providers.js");
+  const normalized = normalizeModelProvider(settings);
+  const usage = input ? estimateModelUsage({ settings: normalized, input }) : null;
+  const checks = [];
+  addModelCheck(checks, "provider", normalized.provider === "disabled" ? "warn" : "ok", normalized.provider);
+  addModelCheck(checks, "model", normalized.provider === "disabled" || normalized.model ? "ok" : "error", normalized.model || "missing");
+  addModelCheck(
+    checks,
+    "baseUrl",
+    normalized.provider === "disabled" || normalized.baseUrl ? "ok" : "error",
+    normalized.baseUrl || "missing"
+  );
+  const apiKeyConfigured = Boolean(settings.apiKey || process.env.PATCHPROOF_MODEL_API_KEY);
+  addModelCheck(
+    checks,
+    "apiKey",
+    ["disabled", "local"].includes(normalized.provider) || apiKeyConfigured ? "ok" : "error",
+    ["disabled", "local"].includes(normalized.provider) ? "not required" : apiKeyConfigured ? "configured" : "missing"
+  );
+  if (usage) {
+    addModelCheck(
+      checks,
+      "promptBudget",
+      usage.promptChars <= usage.maxPromptChars ? "ok" : "error",
+      `${usage.promptChars}/${usage.maxPromptChars} chars, approx ${usage.estimatedPromptTokens} prompt tokens`
+    );
+  }
+  const report = {
+    ok: !checks.some((check) => check.status === "error"),
+    provider: normalized.provider,
+    model: normalized.model,
+    baseUrl: normalized.baseUrl,
+    usage,
+    checks
+  };
+  if (jsonMode) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(`PatchProof model check: ${report.ok ? "ok" : "error"}`);
+    for (const check of checks) {
+      console.log(`${check.status.toUpperCase()}\t${check.name}\t${check.message}`);
+    }
+  }
+  if (!report.ok) process.exitCode = 4;
+}
+
+function addModelCheck(checks, name, status, message) {
+  checks.push({ name, status, message });
 }
 
 async function applyCommand(applyArgs) {
@@ -750,6 +925,14 @@ function readOption(values, name) {
   return values[index + 1] || null;
 }
 
+function readOptions(values, name) {
+  const matches = [];
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === name && values[index + 1]) matches.push(values[index + 1]);
+  }
+  return matches;
+}
+
 function printHelp() {
   console.log(`PatchProof ${PATCHPROOF_VERSION}
 
@@ -765,9 +948,11 @@ Usage:
   patchproof doctor [--repo .] [--config patchproof.yml] [--json]
   patchproof doctor --production [--skip-service-health] [--json]
   patchproof inspect [--repo .] [--config patchproof.yml] [--json]
-  patchproof detect [--repo .] [--config patchproof.yml] [--run-tests] [--command "npm test"] [--json]
+  patchproof detect [--repo .] [--config patchproof.yml] [--run-tests] [--install] [--build] [--command "npm test"] [--json|--sarif] [--out report.json] [--suppressions .patchproofignore] [--no-fail-on-findings]
+  patchproof repair-repo [--repo .] [--config patchproof.yml] [--dry-run|--apply] [--run-tests] [--install] [--build] [--command "npm test"] [--finding <fingerprint>] [--category <category>] [--file <path>] [--max-repairs 25] [--json] [--out report.json]
+  patchproof model-check [--scenario <id>|--input input.json|--repo . --target <id>] [--model-provider <provider>] [--model-name <name>] [--json]
   patchproof targets [--repo .] [--config patchproof.yml] [--json]
-  patchproof test [--repo .] [--config patchproof.yml] [--target <id>] [--command "npm test"] [--timeout-seconds 600] [--json]
+  patchproof test [--repo .] [--config patchproof.yml] [--target <id>] [--install] [--build] [--command "npm test"] [--timeout-seconds 600] [--json]
   patchproof run --scenario <id> [--out certificate.json] [--json]
   patchproof run --input input.json [--out certificate.json] [--json]
   patchproof run --target <id> [--repo .] [--config patchproof.yml] [--out certificate.json] [--apply] [--verify-command] [--json]
@@ -848,6 +1033,9 @@ function printDetectReport(report) {
   console.log(`Scanned source files: ${report.summary.scannedSourceFiles}/${report.summary.sourceFiles}`);
   const counts = report.summary.bySeverity;
   console.log(`Severity counts: critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}, info=${counts.info}`);
+  if (report.summary.suppressedFindings) {
+    console.log(`Suppressed findings: ${report.summary.suppressedFindings}`);
+  }
   if (report.projectTest) {
     console.log(`Project tests: ${report.projectTest.ok ? "passed" : "failed"} (${report.projectTest.command})`);
   }
@@ -859,9 +1047,37 @@ function printDetectReport(report) {
   for (const finding of report.findings) {
     const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""}` : "repository";
     console.log(`- [${finding.severity}] ${location} ${finding.title}`);
+    console.log(`  fingerprint: ${finding.fingerprint}`);
     console.log(`  ${finding.message}`);
     if (finding.evidence) console.log(`  evidence: ${singleLine(finding.evidence)}`);
     if (finding.suggestion) console.log(`  next: ${finding.suggestion}`);
+  }
+}
+
+function printRepositoryRepairReport(report) {
+  console.log(`Repository: ${report.repoRoot}`);
+  console.log(`Repository repair: ${report.status}${report.dryRun ? " (preview)" : ""}`);
+  console.log(report.message);
+  const before = report.detectionBefore?.summary?.totalFindings ?? 0;
+  const after = report.detectionAfter?.summary?.totalFindings ?? 0;
+  console.log(`Findings: ${before} before, ${after}${report.detectionAfter?.projected ? " projected" : ""} after`);
+  if (report.projectTest) {
+    console.log(`Project tests: ${report.projectTest.ok ? "passed" : "failed"} (${report.projectTest.command})`);
+  }
+  if (!report.changes.length) {
+    console.log("No changes generated.");
+    return;
+  }
+  console.log("Changes:");
+  for (const change of report.changes) {
+    console.log(`- ${change.file}: ${change.repairCount} repair(s)`);
+    for (const replacement of change.replacements) {
+      console.log(`  line ${replacement.line}: ${replacement.title}`);
+      console.log(`  ${replacement.rationale}`);
+    }
+  }
+  if (report.dryRun) {
+    console.log("Preview mode: re-run with --apply to write these repairs.");
   }
 }
 

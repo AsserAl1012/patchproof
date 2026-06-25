@@ -10,7 +10,7 @@ PatchProof is intended for private/self-hosted deployments. Browser-side verific
 
 Do not expose anonymous arbitrary-code execution as a public multi-tenant service until sandboxing and tenant isolation have passed an independent security review.
 
-For production deployments, generate secrets with `patchproof keygen`, validate the host with `patchproof doctor --production`, run project execution through Docker runners, and keep API/storage/queue credentials off runner hosts where possible.
+For production deployments, generate secrets with `patchproof keygen`, run `npm run security:check`, `npm run production:check`, validate the host with `patchproof doctor --production`, run project execution through Docker runners, and keep API/storage/queue credentials off runner hosts where possible. Set `PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true` when dedicated runner hosts are required; production doctor will then fail unless `PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated` is declared.
 
 ## Reporting A Vulnerability
 

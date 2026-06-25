@@ -12,6 +12,8 @@ import {
   initializeRepositoryConfig,
   inspectRepository,
   listRepositoryTargets,
+  repairRepository,
+  repositoryDetectionToSarif,
   runRepositoryTestCommand
 } from "../repository-adapter.js";
 import { runPatchProof } from "../runtime.js";
@@ -158,6 +160,28 @@ targets:
   assert.equal(result.certificate.status, "certified");
 });
 
+test("repository adapter extracts boolean JavaScript framework matchers", async () => {
+  const repo = await fixtureRepo("repo-vitest-bool-");
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "tests", "flags.test.js"), `
+import { expect, test } from "vitest";
+test("flags", () => {
+  expect(isReady("ok")).toBeTruthy();
+  expect(isReady("")).toBeFalsy();
+  expect(isReady("blocked")).not.toBe(true);
+});
+`, "utf8");
+
+  const extracted = await extractFrameworkTests({
+    repoRoot: repo,
+    testPath: "tests/flags.test.js",
+    functionName: "isReady",
+    framework: "vitest"
+  });
+  assert.deepEqual(extracted.map((item) => item.expect), [true, false, false]);
+  assert.deepEqual(extracted.map((item) => item.args), [["ok"], [""], ["blocked"]]);
+});
+
 test("repository adapter extracts arrow function and TypeScript targets", async () => {
   const repo = await fixtureRepo("repo-ts-");
   await mkdir(join(repo, "src"), { recursive: true });
@@ -282,6 +306,10 @@ import validators
 def slug_expected():
     return "api-client"
 
+@pytest.fixture
+def yielded_expected():
+    yield "hello-world"
+
 def test_valid_slug():
     assert validators.is_valid_slug("api-client") is True
     assert not validators.is_valid_slug("API Client")
@@ -293,6 +321,7 @@ def test_positive_contract():
 
 @pytest.mark.parametrize("raw, expected", [
     ("Hello World", "hello-world"),
+    pytest.param("Docs Page", "docs-page", id="pytest-param-row"),
     ("API Client", "api-client"),
 ])
 def test_slugify(raw, expected):
@@ -300,6 +329,11 @@ def test_slugify(raw, expected):
 
 def test_slugify_fixture(slug_expected):
     assert validators.slugify("API Client") == slug_expected
+
+def test_slugify_local_bindings(yielded_expected):
+    raw = "Hello World"
+    case = {"expected": yielded_expected}
+    assert validators.slugify(raw) == case["expected"]
 `, "utf8");
 
   const booleanTests = await extractFrameworkTests({
@@ -332,8 +366,10 @@ def test_slugify_fixture(slug_expected):
   });
   assert.deepEqual(parametrizedTests.map((item) => [item.args, item.expect]), [
     [["Hello World"], "hello-world"],
+    [["Docs Page"], "docs-page"],
     [["API Client"], "api-client"],
-    [["API Client"], "api-client"]
+    [["API Client"], "api-client"],
+    [["Hello World"], "hello-world"]
   ]);
 });
 
@@ -353,6 +389,7 @@ test("repository init creates a starter config from checkout metadata", async ()
   const config = await readFile(join(repo, "patchproof.yml"), "utf8");
   assert.match(config, /frameworkTests: tests\/clamp\.test\.js/);
   assert.match(config, /testCommand: "npm test"/);
+  assert.match(config, /buildCommand: ""/);
   const doctor = await doctorRepository({ repoRoot: repo });
   assert.notEqual(doctor.overall, "error");
 });
@@ -485,7 +522,8 @@ add_test(NAME sample_tests COMMAND sample_tests)
 #include <cstdio>
 #include <cstring>
 
-void copy_name(char *dest, const char *src) {
+void copy_name(const char *src) {
+  char dest[64];
   strcpy(dest, src);
 }
 `, "utf8");
@@ -502,10 +540,171 @@ TEST(Buffer, Copy) {
   assert.ok(inspection.frameworks.includes("ctest"));
   assert.ok(inspection.frameworks.includes("gtest"));
   assert.ok(inspection.testCommands.some((item) => item.command.includes("ctest")));
+  assert.ok(inspection.buildCommands.some((item) => item.command === "cmake -S . -B build"));
+  assert.ok(inspection.buildCommands.some((item) => item.command === "cmake --build build"));
 
   const report = await detectRepositoryBugs({ repoRoot: repo });
   assert.equal(report.summary.highestSeverity, "high");
   assert.ok(report.findings.some((finding) => finding.file === "src/buffer.cpp" && finding.title === "Unbounded C string API"));
+});
+
+test("repository detector ignores bug words inside strings but honors comment markers", async () => {
+  const repo = await fixtureRepo("detect-marker-noise-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "messages.js"), `export const clean = "No bug signals were detected.";
+// BUG: real marker to review
+export function ok(value) { return value; }
+`, "utf8");
+
+  const report = await detectRepositoryBugs({ repoRoot: repo });
+  const markers = report.findings.filter((finding) => finding.category === "comment-marker");
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0].line, 2);
+  assert.equal(report.summary.byCategory["comment-marker"], 1);
+});
+
+test("repository repair previews and applies conservative C/C++ repairs with project validation", async () => {
+  const repo = await fixtureRepo("repair-cpp-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "buffer.c"), `#include <stdio.h>
+#include <string.h>
+
+void copy_name(const char *src) {
+  char dest[64];
+  strcpy(dest, src);
+}
+`, "utf8");
+  await writeFile(join(repo, "test-command.js"), `import { readFileSync } from "node:fs";
+const source = readFileSync("src/buffer.c", "utf8");
+if (!source.includes("snprintf(dest, sizeof(dest)")) process.exit(2);
+`, "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: c
+  testCommand: node test-command.js
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  const preview = await repairRepository({ repoRoot: repo });
+  assert.equal(preview.status, "preview");
+  assert.equal(preview.changes.length, 1);
+  assert.match(preview.changes[0].diff, /snprintf\(dest, sizeof\(dest\)/);
+  assert.match(await readFile(join(repo, "src", "buffer.c"), "utf8"), /strcpy/);
+
+  const applied = await repairRepository({ repoRoot: repo, apply: true, runTests: true });
+  assert.equal(applied.status, "certified");
+  assert.equal(applied.projectTest.ok, true);
+  const updated = await readFile(join(repo, "src", "buffer.c"), "utf8");
+  assert.match(updated, /snprintf\(dest, sizeof\(dest\), "%s", src\);/);
+  assert.equal(applied.semanticClaim, false);
+  assert.equal(applied.writePolicy.allowedPathsEnforced, true);
+  assert.equal(applied.repairMode, "static-rewrite-project-test");
+});
+
+test("repository repair does not rewrite C/C++ pointer destinations", async () => {
+  const repo = await fixtureRepo("repair-cpp-pointer-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "buffer.c"), `#include <string.h>
+
+void copy_name(char *dest, const char *src) {
+  strcpy(dest, src);
+}
+`, "utf8");
+
+  const preview = await repairRepository({ repoRoot: repo });
+  assert.equal(preview.status, "no-candidates");
+  assert.equal(preview.changes.length, 0);
+  const unchanged = await readFile(join(repo, "src", "buffer.c"), "utf8");
+  assert.match(unchanged, /strcpy\(dest, src\)/);
+});
+
+test("repository repair honors allowed paths and preserves CRLF line endings", async () => {
+  const repo = await fixtureRepo("repair-policy-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "vendor"), { recursive: true });
+  await writeFile(join(repo, "src", "items.py"), "def add_item(items, item):\r\n    return items.append(item)\r\n", "utf8");
+  await writeFile(join(repo, "vendor", "items.py"), "def add_item(items, item):\r\n    return items.append(item)\r\n", "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: python
+  allowedPaths:
+    - src/**
+  forbiddenPaths:
+    - vendor/**
+`, "utf8");
+
+  const preview = await repairRepository({ repoRoot: repo, files: ["src/**"] });
+  assert.equal(preview.status, "preview");
+  assert.equal(preview.changes.length, 1);
+  assert.equal(preview.changes[0].file, "src/items.py");
+  assert.equal(preview.writePolicy.lineEndingsPreserved, true);
+  assert.match(preview.changes[0].diff, /return items/);
+
+  const applied = await repairRepository({ repoRoot: repo, apply: true, files: ["src/**"] });
+  const updated = await readFile(join(repo, "src", "items.py"), "utf8");
+  assert.match(updated, /\r\n    return items\r\n$/);
+  assert.equal(applied.changes[0].file, "src/items.py");
+});
+
+test("repository repair previews Python append-return repairs", async () => {
+  const repo = await fixtureRepo("repair-python-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "items.py"), `def add_item(items, item):
+    return items.append(item)
+`, "utf8");
+
+  const preview = await repairRepository({ repoRoot: repo });
+  assert.equal(preview.status, "preview");
+  assert.equal(preview.changes.length, 1);
+  assert.match(preview.changes[0].diff, /items\.append\(item\)/);
+  assert.match(preview.changes[0].diff, /return items/);
+});
+
+test("repository init creates C/C++ build and test commands", async () => {
+  const repo = await fixtureRepo("repo-init-cpp-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "CMakeLists.txt"), `
+cmake_minimum_required(VERSION 3.20)
+project(sample)
+enable_testing()
+add_test(NAME sample_tests COMMAND sample_tests)
+`, "utf8");
+  await writeFile(join(repo, "src", "buffer.cpp"), "int copy_name() { return 1; }\n", "utf8");
+  await writeFile(join(repo, "tests", "buffer_test.cpp"), "TEST(Buffer, Copy) {}\n", "utf8");
+
+  const result = await initializeRepositoryConfig({ repoRoot: repo });
+  assert.equal(result.created, true);
+  const config = await readFile(join(repo, "patchproof.yml"), "utf8");
+  assert.match(config, /language: cpp/);
+  assert.match(config, /testCommand: "ctest --test-dir build --output-on-failure"/);
+  assert.match(config, /buildCommand: "cmake --build build"/);
+  assert.match(config, /installCommand: "cmake -S \. -B build"/);
+});
+
+test("repository detector supports suppressions and SARIF output", async () => {
+  const repo = await fixtureRepo("detect-suppressions-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "cache.py"), `def remember(value, seen=[]):
+    seen.append(value)
+    return seen
+`, "utf8");
+  await writeFile(join(repo, ".patchproofignore"), "static-python:Mutable default argument@src/cache.py\n", "utf8");
+
+  const suppressed = await detectRepositoryBugs({ repoRoot: repo });
+  assert.equal(suppressed.summary.highestSeverity, "medium");
+  assert.equal(suppressed.summary.suppressedFindings, 1);
+  assert.ok(suppressed.suppressedFindings.some((finding) => finding.title === "Mutable default argument"));
+
+  const unsuppressed = await detectRepositoryBugs({ repoRoot: repo, defaultSuppressions: false });
+  assert.equal(unsuppressed.summary.highestSeverity, "high");
+  assert.ok(unsuppressed.findings[0].fingerprint);
+  const sarif = repositoryDetectionToSarif(unsuppressed);
+  assert.equal(sarif.version, "2.1.0");
+  assert.equal(sarif.runs[0].results.some((result) => result.partialFingerprints.patchproof), true);
 });
 
 test("repository adapter runs configured project test commands", async () => {
@@ -526,6 +725,67 @@ project:
   const result = await runRepositoryTestCommand({ repoRoot: repo });
   assert.equal(result.ok, true);
   assert.equal(result.command, "npm test");
+  assert.match(result.stdout, /project tests passed/);
+});
+
+test("repository detection maps failing framework output to files", async () => {
+  const repo = await fixtureRepo("repo-test-failure-map-");
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "tests", "math.test.js"), "throw new Error('bad math');\n", "utf8");
+  await writeFile(join(repo, "test-command.js"), `console.error("FAILED tests/math.test.js::adds_numbers");
+console.error("    at Object.<anonymous> (tests/math.test.js:1:7)");
+process.exit(1);
+`, "utf8");
+
+  const report = await detectRepositoryBugs({
+    repoRoot: repo,
+    runTests: true,
+    command: "node test-command.js"
+  });
+  const mapped = report.findings.filter((finding) => finding.category === "framework-test-failure");
+  assert.ok(mapped.some((finding) => finding.file === "tests/math.test.js"));
+  assert.ok(report.projectTest.frameworkFailures.some((failure) => failure.file === "tests/math.test.js"));
+});
+
+test("repository adapter can install dependencies before project tests", async () => {
+  const repo = await fixtureRepo("repo-test-install-");
+  await writeFile(join(repo, "install-command.js"), "console.log('install step passed');\n", "utf8");
+  await writeFile(join(repo, "test-command.js"), "console.log('project tests passed');\n", "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: javascript
+  installCommand: node install-command.js
+  testCommand: node test-command.js
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  const result = await runRepositoryTestCommand({ repoRoot: repo, install: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.install.ok, true);
+  assert.match(result.install.stdout, /install step passed/);
+  assert.match(result.stdout, /project tests passed/);
+});
+
+test("repository adapter can build before project tests", async () => {
+  const repo = await fixtureRepo("repo-test-build-");
+  await writeFile(join(repo, "build-command.js"), "console.log('build step passed');\n", "utf8");
+  await writeFile(join(repo, "test-command.js"), "console.log('project tests passed');\n", "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: cpp
+  buildCommand: node build-command.js
+  testCommand: node test-command.js
+  allowedPaths:
+    - src/**
+`, "utf8");
+
+  const result = await runRepositoryTestCommand({ repoRoot: repo, build: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.build.ok, true);
+  assert.match(result.build.stdout, /build step passed/);
   assert.match(result.stdout, /project tests passed/);
 });
 

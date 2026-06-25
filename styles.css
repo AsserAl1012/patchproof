@@ -85,6 +85,14 @@ button.primary {
   font-weight: 750;
 }
 
+.small-button {
+  min-height: 30px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -641,6 +649,67 @@ textarea {
   font-size: 13px;
 }
 
+.model-panel {
+  min-height: 260px;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.model-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.model-grid .model-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.model-grid .model-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.model-grid input,
+.model-grid select {
+  height: 40px;
+}
+
+.model-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+}
+
+.model-output {
+  min-height: 96px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--ink);
+  color: #d7e1f5;
+  padding: 14px;
+  overflow: auto;
+}
+
 .candidate-list {
   display: grid;
   gap: 10px;
@@ -792,6 +861,181 @@ pre,
   gap: 8px;
 }
 
+.repository-workspace {
+  display: none;
+  gap: 16px;
+  padding: 20px;
+}
+
+.repository-workspace.active {
+  display: grid;
+}
+
+.repo-card {
+  overflow: visible;
+}
+
+.repo-form {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(180px, 0.7fr) minmax(220px, 1fr) minmax(180px, auto) minmax(180px, auto);
+  gap: 12px;
+  padding: 16px;
+  align-items: end;
+}
+
+.repo-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.repo-form input[type="text"] {
+  height: 42px;
+}
+
+.checkbox-row {
+  min-height: 42px;
+  display: flex !important;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+.repo-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.repo-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.repo-flow span {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.repo-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+}
+
+.repo-panel {
+  min-height: 360px;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.finding-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.finding-item.severity-critical,
+.finding-item.severity-high {
+  box-shadow: inset 4px 0 0 var(--red);
+}
+
+.finding-item.severity-medium {
+  box-shadow: inset 4px 0 0 var(--amber);
+}
+
+.finding-item.severity-low,
+.finding-item.severity-info {
+  box-shadow: inset 4px 0 0 var(--blue);
+}
+
+.finding-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.finding-top span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.finding-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.finding-item .finding-evidence {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--surface-soft);
+  color: var(--muted-strong);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.finding-item .finding-suggestion {
+  color: var(--text);
+}
+
+.finding-item code {
+  color: var(--blue);
+  font-size: 12px;
+}
+
+.finding-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.suggestion-item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.suggestion-item strong {
+  color: var(--blue);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.suggestion-item span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1280px) {
   body {
     min-width: 0;
@@ -817,6 +1061,10 @@ pre,
   }
 
   .workspace,
+  .repo-form,
+  .repo-flow,
+  .repo-grid,
+  .model-grid,
   .dashboard-grid,
   .auth-grid {
     grid-template-columns: 1fr;
@@ -838,6 +1086,7 @@ pre,
   }
 
   .saas-dashboard,
+  .repository-workspace,
   .workspace,
   .topbar {
     padding-left: 16px;
@@ -846,6 +1095,9 @@ pre,
 
   .editor-grid,
   .project-form,
+  .repo-form,
+  .repo-flow,
+  .repo-grid,
   .ops-inputs,
   .scenario-rail,
   .scenario-list {

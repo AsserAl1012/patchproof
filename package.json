@@ -39,6 +39,7 @@
     "Dockerfile",
     "docs",
     "engine.js",
+    "examples.js",
     "examples",
     "helm",
     "index.html",
@@ -75,7 +76,10 @@
     "doctor:production": "node bin/patchproof.js doctor --production",
     "test": "node --test",
     "check": "node scripts/check.js",
+    "security:check": "node scripts/security-self-audit.js",
+    "production:check": "node scripts/production-stack-check.js",
     "integration:services": "node scripts/integration-services.js",
+    "integration:services:docker": "powershell -ExecutionPolicy Bypass -File scripts/integration-services-docker.ps1",
     "release:check": "node scripts/verify-release.js",
     "smoke": "node scripts/smoke.js"
   },

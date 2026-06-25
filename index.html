@@ -19,6 +19,7 @@
 
         <nav class="side-nav" aria-label="Workspace sections">
           <a href="#projects" data-view-link="projects">Projects</a>
+          <a href="#repository" data-view-link="repository">Repo Scan</a>
           <a href="#repair" data-view-link="repair">Repair Lab</a>
           <a href="#evidence" data-view-link="repair" data-scroll-target="#evidence-workspace">Evidence</a>
           <a href="./design-examples.html">Design Examples</a>
@@ -167,6 +168,95 @@
           </div>
         </section>
 
+        <section id="repository-workspace" class="repository-workspace app-view" data-view="repository">
+          <div class="panel repo-card">
+            <div class="panel-header">
+              <span>Repository Analysis</span>
+              <span id="repoStatusLabel" class="status-chip neutral">Idle</span>
+            </div>
+            <div class="repo-form">
+              <label>
+                <span>Local repo path</span>
+                <input id="repoRootInput" type="text" placeholder="C:\Users\you\project or /home/you/project">
+              </label>
+              <label>
+                <span>Config path</span>
+                <input id="repoConfigInput" type="text" value="patchproof.yml">
+              </label>
+              <label>
+                <span>Test command</span>
+                <input id="repoCommandInput" type="text" placeholder="optional, e.g. npm test">
+              </label>
+              <label class="checkbox-row">
+                <input id="repoRunTestsInput" type="checkbox">
+                <span>Run project tests during detection</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="repoInstallInput" type="checkbox">
+                <span>Install dependencies before tests</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="repoBuildInput" type="checkbox">
+                <span>Build project before tests</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="repoForceInitInput" type="checkbox">
+                <span>Overwrite existing patchproof.yml</span>
+              </label>
+              <div class="repo-actions">
+                <button id="repoInspectButton" class="primary">Inspect Repo</button>
+                <button id="repoInitButton">Create Config</button>
+                <button id="repoDetectButton">Detect Bugs</button>
+                <button id="repoRepairPreviewButton">Preview Repairs</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="repo-flow" aria-label="Repository workflow">
+            <span>1. Inspect repo</span>
+            <span>2. Create or load config</span>
+            <span>3. Detect findings</span>
+            <span>4. Preview selected repairs</span>
+            <span>5. Load target into Repair Lab</span>
+          </div>
+
+          <div class="repo-grid">
+            <div class="panel repo-panel">
+              <div class="panel-header">
+                <span>Suggested Onboarding</span>
+                <span id="repoSuggestionCount" class="muted">0 suggestions</span>
+              </div>
+              <div id="repoSuggestionList" class="dashboard-list">Inspect a repository to see suggested source and test files.</div>
+            </div>
+            <div class="panel repo-panel">
+              <div class="panel-header">
+                <span>Detected Targets</span>
+                <span id="repoTargetCount" class="muted">0 targets</span>
+              </div>
+              <div id="repoTargetList" class="dashboard-list">Inspect a repository to list configured targets.</div>
+            </div>
+            <div class="panel repo-panel">
+              <div class="panel-header">
+                <span>Bug Signals</span>
+                <div class="panel-actions">
+                  <span id="repoFindingCount" class="muted">0 findings</span>
+                  <button id="repoExportJsonButton" class="small-button" type="button">Export JSON</button>
+                  <button id="repoExportSarifButton" class="small-button" type="button">Export SARIF</button>
+                </div>
+              </div>
+              <div id="repoFindingList" class="dashboard-list">Run detection to highlight likely bugs.</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span>Repository Report</span>
+              <span class="muted">JSON summary</span>
+            </div>
+            <pre id="repoOutput" class="ops-output">No repository analyzed yet.</pre>
+          </div>
+        </section>
+
         <main id="repair-workspace" class="workspace app-view active" data-view="repair">
           <section class="editor-grid">
             <div class="panel code-panel code-panel-large">
@@ -204,6 +294,54 @@
               <input id="mayChangeInput" type="text" spellcheck="false">
               <label class="field-label" for="postconditionInput">Postcondition</label>
               <input id="postconditionInput" type="text" spellcheck="false">
+            </div>
+
+            <div class="panel model-panel">
+              <div class="panel-header">
+                <span>Model Setup</span>
+                <span id="modelStatusLabel" class="muted">dry run only</span>
+              </div>
+              <div class="model-grid">
+                <label>
+                  <span>Provider</span>
+                  <select id="modelProviderInput">
+                    <option value="disabled">Disabled</option>
+                    <option value="openai">OpenAI Chat Completions</option>
+                    <option value="openai-responses">OpenAI Responses</option>
+                    <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="azure-openai">Azure OpenAI</option>
+                    <option value="local">Local endpoint</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Model</span>
+                  <input id="modelNameInput" type="text" placeholder="gpt-4.1-mini or local model">
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <input id="modelBaseUrlInput" type="text" placeholder="https://api.openai.com/v1">
+                </label>
+                <label>
+                  <span>API key env</span>
+                  <input id="modelApiKeyEnvInput" type="text" value="PATCHPROOF_MODEL_API_KEY">
+                </label>
+                <label>
+                  <span>Candidates</span>
+                  <input id="modelCandidateCountInput" type="number" min="1" max="8" value="4">
+                </label>
+                <label>
+                  <span>Prompt budget</span>
+                  <input id="modelPromptBudgetInput" type="number" min="1000" value="20000">
+                </label>
+                <label class="model-toggle">
+                  <input id="modelUseInput" type="checkbox">
+                  <span>Use model candidates on run</span>
+                </label>
+              </div>
+              <div class="model-actions">
+                <button id="modelCheckButton" type="button">Check Model Setup</button>
+              </div>
+              <pre id="modelCheckOutput" class="model-output">Configure a provider to estimate prompt size before model generation.</pre>
             </div>
 
             <div class="panel results-panel">

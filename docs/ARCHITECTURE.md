@@ -7,8 +7,8 @@ index.html
   app shell and editor layout
 
 app.js
-  SaaS dashboard, cookie-auth/project/run UI, server-backed verification calls,
-  result rendering, certificate export
+  SaaS dashboard, cookie-auth/project/run UI, repository scan/init/detect UI,
+  server-backed verification calls, result rendering, certificate/SARIF export
 
 worker.js
   disabled browser-worker stub; browser-side verification is intentionally off
@@ -23,8 +23,11 @@ bin/patchproof.js
 repository-adapter.js
   Inspects repository checkouts, detects package/test metadata, reads patchproof.yml
   targets, uses AST parsing for JavaScript/TypeScript function extraction and
-  simple framework assertions, reads JSON PatchProof tests, applies certified
-  function replacements, runs configured project test commands, and builds verifier inputs
+  simple framework assertions, extracts common pytest literals, reads JSON
+  PatchProof tests, detects JavaScript/Python/C/C++ bug signals, exports SARIF,
+  applies certified function replacements, runs configured install/build/test
+  project commands, builds verifier inputs, and previews/applies conservative
+  repository-level static repairs with selection and write-policy enforcement
 
 saas/
   Postgres/JSON store adapters, migrations, Redis/memory queues, artifact storage,
@@ -53,6 +56,10 @@ saas/retention.js
 
 test/
   automated regression tests
+
+scripts/
+  syntax checks, browser smoke tests, release metadata verification,
+  service-backed integration tests, security self-audit, and production stack checks
 ```
 
 ## Validation Pipeline
@@ -90,13 +97,19 @@ test/
 10. Runner loops handle `SIGINT`/`SIGTERM` by stopping after the current job and recording a stopping heartbeat.
 11. Metrics expose run totals, job status counts, queue depth, runner count, average run/job duration, audit event count, and model-call/error counters.
 
+## Repository Detection
+
+Repository detection is separate from function-level repair. It inspects checkout metadata, configured targets, dependency files, test/build commands, and source files, then reports likely bug signals with severity, file, line, evidence, suggestion, fingerprint, and suppression support. It skips obvious generated source to reduce noise. It can optionally run configured install/build/test commands and map common pytest or stack-frame failures back to files. Reports can be exported as JSON or SARIF for code-scanning tools.
+
+`patchproof repair-repo` is the repository-level repair path. It builds static repair plans from active findings, previews diffs by default, can be scoped by finding fingerprint, category, or file pattern, applies changes only with `--apply`, and emits a `patchproof.repository-repair.v1` report with `semanticClaim: false`. Repair writes honor configured `allowedPaths` and `forbiddenPaths`, preserve line endings/BOMs, and record skipped repairs. A repository repair is marked `certified` only when the configured project validation command passes after the changes. C/C++ support lives in this repository-level path: supported C/C++ fixes are conservative one-line safety rewrites for patterns such as `gets`, `strcpy`, `strcat`, and `sprintf` only when the destination is a known local fixed array, not semantic C/C++ verification.
+
 ## Why The Design Is Conservative
 
 PatchProof treats candidate generation as untrusted. A patch is only accepted when the verifier can produce bounded evidence. The certificate is intentionally scoped and includes residual risk rather than pretending the whole program is proven correct.
 
 ## Model Integration
 
-`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints for JavaScript or Python. Provider credentials stay in the runner process; only generated source and hashed provenance enter the isolated verifier. Prompt size is estimated before the call and bounded by `maxPromptChars`; generation results include prompt/response size metadata for observability. Providers return:
+`saas/model-providers.js` calls OpenAI-compatible, Azure OpenAI, or local chat-completions endpoints for JavaScript or Python. Provider credentials stay in the runner/API process; only generated source and hashed provenance enter the isolated verifier. CLI/SaaS runs can attach model candidates before sandbox execution, and the browser Repair Lab can opt into server-side `/api/model/generate` before calling `/api/run`. Prompt size is estimated before the call and bounded by `maxPromptChars`; generation results include prompt/response size metadata for observability. Providers return:
 
 ```json
 {

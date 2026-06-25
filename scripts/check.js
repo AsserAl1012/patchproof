@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const nodeFiles = [
   "engine.js",
+  "examples.js",
   "runtime.js",
   "repository-adapter.js",
   "app.js",
@@ -30,6 +31,8 @@ const nodeFiles = [
   "sandbox/docker-runner.js",
   "scripts/check.js",
   "scripts/integration-services.js",
+  "scripts/production-stack-check.js",
+  "scripts/security-self-audit.js",
   "scripts/smoke.js",
   "scripts/verify-release.js"
 ];

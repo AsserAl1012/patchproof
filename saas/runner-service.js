@@ -70,7 +70,10 @@ export async function processQueuedJob({ store, queue, artifactStore, payload, r
       runnerPolicy,
       { isolation: effectiveIsolation }
     );
-    if (!result.ok) throw new Error(result.error?.message || "Runner failed.");
+    if (!result.ok) {
+      if (result.error?.stderr) logs.push(result.error.stderr);
+      throw new Error([result.error?.message || "Runner failed.", result.error?.stderr || ""].filter(Boolean).join(" "));
+    }
     const latest = await store.getRunDetail(detail.run.id);
     if (latest?.run?.status === "cancelled") {
       await queue.ack?.(payload);

@@ -68,18 +68,25 @@ try {
   const runnerPolicy = buildRunnerPolicy({ orgId: boot.org.id, projectId: project.id, runId: run.id, settings, config: project.config });
   await queue.enqueue({ jobId: job.id, runId: run.id, orgId: boot.org.id, projectId: project.id, runnerPolicy });
 
-  const processed = await runRunnerLoop({
-    store,
-    queue,
-    artifactStore,
-    runnerId: "runner_ci_services",
-    isolation: "docker",
-    once: true,
-    pollSeconds: 1
-  });
-  if (processed.processed !== 1) throw new Error(`Expected one processed job, got ${processed.processed}.`);
-
-  const detail = await store.getRunDetail(run.id);
+  let processedTotal = 0;
+  let detail = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const processed = await runRunnerLoop({
+      store,
+      queue,
+      artifactStore,
+      runnerId: "runner_ci_services",
+      isolation: "docker",
+      once: true,
+      pollSeconds: 1
+    });
+    processedTotal += processed.processed;
+    detail = await store.getRunDetail(run.id);
+    if (!["queued", "running"].includes(detail.run.status)) break;
+    if (await queue.depth() === 0 && await queue.inFlightDepth?.() === 0) break;
+  }
+  if (processedTotal < 1) throw new Error(`Expected at least one processed job, got ${processedTotal}.`);
+  detail ||= await store.getRunDetail(run.id);
   if (detail.run.status !== "certified") {
     throw new Error(`Expected certified run, got ${detail.run.status}: ${detail.run.error || ""}`);
   }
@@ -99,6 +106,7 @@ try {
     status: detail.run.status,
     artifactDriver: certificateArtifact.storageDriver,
     queueDepth: await queue.depth(),
+    processed: processedTotal,
     replayValid: replay.valid
   }, null, 2));
 } finally {

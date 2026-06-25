@@ -46,6 +46,15 @@ FORBIDDEN_NAMES = {
 SAFE_BUILTINS["__build_class__"] = __build_class__
 SAFE_BUILTINS["__import__"] = None
 
+
+def mutable_default_replacement(match):
+    prefix, name, default, suffix = match.groups()
+    indent = re.match(r"^(\s*)", prefix).group(1)
+    body_indent = f"{indent}    "
+    factory = "set()" if default.startswith("set") else "{}" if default == "{}" else "[]"
+    return f"{prefix}{name}=None{suffix}\n{body_indent}if {name} is None:\n{body_indent}    {name} = {factory}"
+
+
 PYTHON_TEMPLATES = [
     ("upper-bound-variable", "Replace lower-bound variable in upper-bound check", ["local-branch-change", "range-boundary"], [(r">\s*min\b", "> max")]),
     ("slice-limit-off-by-one", "Remove off-by-one from slice limit", ["boundary-change", "collection-size"], [(r"\[:\s*limit\s*-\s*1\s*\]", "[:limit]")]),
@@ -54,6 +63,7 @@ PYTHON_TEMPLATES = [
     ("append-return-list", "Return the list after append instead of append's None result", ["mutation-visible", "collection-return"], [(r"^(\s*)return\s+([A-Za-z_]\w*)\.append\(([^)]*)\)\s*$", r"\1\2.append(\3)\n\1return \2")]),
     ("raise-value-error-negative", "Raise ValueError instead of returning None for negative input", ["exception-contract", "input-validation"], [(r"if\s+([A-Za-z_]\w*)\s*<\s*0:\n(\s*)return\s+None", r"if \1 < 0:\n\2raise ValueError('negative')")]),
     ("missing-increment", "Add missing increment to returned value", ["arithmetic-change"], [(r"return\s+value\s*$", "return value + 1")]),
+    ("mutable-default-none-guard", "Replace mutable default with None guard", ["state-leakage", "signature-change"], [(r"^(\s*def\s+\w+\([^)]*?)([A-Za-z_]\w*)\s*=\s*(\[\]|\{\}|set\(\))([^)]*\):\s*)$", mutable_default_replacement)]),
 ]
 
 

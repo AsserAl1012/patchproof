@@ -13,6 +13,8 @@ Determine whether PatchProof can safely process untrusted user-submitted JavaScr
 - Production project runs are queued and processed by runner workers.
 - Docker runner jobs use one container per job, no network by default, read-only filesystem, non-root user, tmpfs workspace, CPU/memory/PID/time limits, `no-new-privileges`, dropped capabilities, and optional hardened Docker runtime selection through `PATCHPROOF_DOCKER_RUNTIME`.
 - Stronger runtimes such as gVisor `runsc` or Kata can be selected when installed on runner hosts.
+- Production checks can require dedicated runner-host declarations with `PATCHPROOF_REQUIRE_DEDICATED_RUNNER_HOST=true` and `PATCHPROOF_RUNNER_HOST_ISOLATION=dedicated`.
+- Repository-level repair is static rewriting plus optional project-test certification. Reports explicitly set `semanticClaim: false`, include write-policy metadata, and C/C++ static repairs skip pointer destinations.
 - Certificates are replay-verifiable and can be issuer-signed with Ed25519.
 - SaaS state is stored in Postgres, jobs in Redis, artifacts in S3/MinIO.
 
@@ -50,7 +52,8 @@ Review at least:
 Before public launch, collect:
 
 - passing unit tests and smoke tests;
-- passing `npm run integration:services` against Postgres, Redis, MinIO, and Docker;
+- passing `npm run security:check` and `npm run production:check`;
+- passing `npm run integration:services` or `scripts\integration-services-docker.ps1` against Postgres, Redis, MinIO, S3 artifacts, and Docker runner execution;
 - Docker runner image digest and cosign signature;
 - SBOM and checksums attached to the release;
 - production deployment diagram;
