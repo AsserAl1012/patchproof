@@ -4,6 +4,21 @@ import { createClient } from "redis";
 const DEFAULT_QUEUE_NAME = "patchproof:jobs";
 const DEFAULT_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
+const REDIS_CLAIM_SCRIPT = `
+local raw = redis.call("RPOP", KEYS[1])
+if not raw then return nil end
+local ok, item = pcall(cjson.decode, raw)
+if not ok or type(item) ~= "table" then
+  item = { malformed = true, raw = raw }
+end
+item["queueAttempt"] = tonumber(item["queueAttempt"] or 0) + 1
+item["leaseId"] = ARGV[1]
+item["leasedAt"] = ARGV[2]
+item["leaseExpiresAt"] = ARGV[3]
+local leased = cjson.encode(item)
+redis.call("LPUSH", KEYS[2], leased)
+return leased
+`;
 
 export function createJobQueue(options = {}) {
   const redisOptions = { ...(options.redis || {}), ...options };
@@ -187,26 +202,28 @@ export class RedisJobQueue {
 
   async claim({ timeoutSeconds = 5, leaseMs = this.leaseMs } = {}) {
     await this.connect();
-    await this.requeueExpired();
-    const raw = await this.client.sendCommand([
-      "BRPOPLPUSH",
-      this.queueName,
-      this.processingName,
-      String(Math.max(0, Number(timeoutSeconds || 0)))
-    ]);
-    if (!raw) return null;
-    const item = parseQueuePayload(raw);
-    const leased = {
-      ...sanitizePayload(item),
-      queueAttempt: Number(item.queueAttempt || 0) + 1,
-      leaseId: id("lease"),
-      leasedAt: nowIso(),
-      leaseExpiresAt: new Date(Date.now() + leaseMs).toISOString()
-    };
-    const leasedRaw = JSON.stringify(leased);
-    await this.client.lRem(this.processingName, 1, raw);
-    await this.client.lPush(this.processingName, leasedRaw);
-    return { ...leased, __queueRaw: leasedRaw };
+    const timeoutMs = Math.max(0, Number(timeoutSeconds || 0) * 1000);
+    const deadline = Date.now() + timeoutMs;
+    do {
+      await this.requeueExpired();
+      const leasedRaw = await this.claimOnce(leaseMs);
+      if (leasedRaw) {
+        const leased = parseQueuePayload(leasedRaw);
+        return { ...leased, __queueRaw: leasedRaw };
+      }
+      if (!timeoutMs) return null;
+      await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+    } while (Date.now() < deadline);
+    return null;
+  }
+
+  async claimOnce(leaseMs = this.leaseMs) {
+    const leasedAt = nowIso();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    return this.client.eval(REDIS_CLAIM_SCRIPT, {
+      keys: [this.queueName, this.processingName],
+      arguments: [id("lease"), leasedAt, leaseExpiresAt]
+    });
   }
 
   async ack(payload) {
@@ -317,4 +334,8 @@ function id(prefix) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
 }

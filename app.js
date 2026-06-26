@@ -83,6 +83,8 @@ const elements = {
   repoInitButton: document.querySelector("#repoInitButton"),
   repoDetectButton: document.querySelector("#repoDetectButton"),
   repoRepairPreviewButton: document.querySelector("#repoRepairPreviewButton"),
+  repoRepairApplyButton: document.querySelector("#repoRepairApplyButton"),
+  repoRepairReportButton: document.querySelector("#repoRepairReportButton"),
   repoExportJsonButton: document.querySelector("#repoExportJsonButton"),
   repoExportSarifButton: document.querySelector("#repoExportSarifButton"),
   repoStatusLabel: document.querySelector("#repoStatusLabel"),
@@ -108,6 +110,7 @@ let selectedProject = null;
 let runPollTimer = null;
 let pendingProjectRunId = null;
 let lastRepositoryDetectionReport = null;
+let lastRepositoryRepairReport = null;
 let selectedRunId = null;
 
 function init() {
@@ -186,6 +189,8 @@ function bindEvents() {
   elements.repoInitButton.addEventListener("click", initializeLocalRepository);
   elements.repoDetectButton.addEventListener("click", detectLocalRepository);
   elements.repoRepairPreviewButton.addEventListener("click", previewRepositoryRepairs);
+  elements.repoRepairApplyButton.addEventListener("click", applyRepositoryRepairPreview);
+  elements.repoRepairReportButton.addEventListener("click", downloadRepositoryRepairReport);
   elements.repoExportJsonButton.addEventListener("click", exportRepositoryJson);
   elements.repoExportSarifButton.addEventListener("click", exportRepositorySarif);
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -603,6 +608,8 @@ async function initializeLocalRepository() {
       auth: false
     });
     lastRepositoryDetectionReport = null;
+    lastRepositoryRepairReport = null;
+    updateRepositoryRepairActions();
     renderRepositoryInspection(response.result.report);
     resetRepositoryFindings("Run detection after reviewing the generated config.");
     elements.repoOutput.textContent = JSON.stringify({
@@ -632,6 +639,8 @@ async function detectLocalRepository() {
       auth: false
     });
     lastRepositoryDetectionReport = response.report;
+    lastRepositoryRepairReport = null;
+    updateRepositoryRepairActions();
     renderRepositoryInspection(response.report.inspection);
     renderRepositoryFindings(response.report);
     elements.repoOutput.textContent = JSON.stringify(response.report, null, 2);
@@ -660,6 +669,7 @@ async function previewRepositoryRepairs(selection = {}) {
       },
       auth: false
     });
+    lastRepositoryRepairReport = response.report;
     lastRepositoryDetectionReport = {
       ...response.report.detectionBefore,
       repoRoot: response.report.repoRoot,
@@ -671,6 +681,66 @@ async function previewRepositoryRepairs(selection = {}) {
     });
     elements.repoOutput.textContent = JSON.stringify(response.report, null, 2);
     elements.repoStatusLabel.textContent = response.report.changes.length ? "Repair preview" : "No repairs";
+    updateRepositoryRepairActions();
+  } catch (error) {
+    renderRepositoryError(error);
+  } finally {
+    clearRepositoryBusy();
+  }
+}
+
+async function applyRepositoryRepairPreview() {
+  if (!lastRepositoryRepairReport?.changes?.length) {
+    elements.repoStatusLabel.textContent = "Preview required";
+    return;
+  }
+  const files = [...new Set(lastRepositoryRepairReport.changes.map((change) => change.file))];
+  const repairCount = lastRepositoryRepairReport.changes.reduce((total, change) => total + Number(change.repairCount || 0), 0);
+  const shouldRunTests = elements.repoRunTestsInput.checked || elements.repoInstallInput.checked || elements.repoBuildInput.checked || Boolean(elements.repoCommandInput.value.trim());
+  const confirmation = [
+    `Apply ${repairCount} repair(s) across ${files.length} file(s)?`,
+    "",
+    ...files.slice(0, 12).map((file) => `- ${file}`),
+    files.length > 12 ? `- ... ${files.length - 12} more` : "",
+    "",
+    shouldRunTests
+      ? "Project validation will run and failed validation will roll back the file writes."
+      : "No project validation is selected; enable Run project tests for stronger certification."
+  ].filter(Boolean).join("\n");
+  if (!window.confirm(confirmation)) return;
+
+  setRepositoryBusy("Applying repairs");
+  try {
+    const response = await api("/api/repository/repair", {
+      method: "POST",
+      body: {
+        ...repositoryRequestBody(),
+        dryRun: false,
+        apply: true,
+        runTests: elements.repoRunTestsInput.checked,
+        install: elements.repoInstallInput.checked,
+        build: elements.repoBuildInput.checked,
+        command: elements.repoCommandInput.value.trim() || undefined,
+        revertOnFailure: true,
+        fingerprints: lastRepositoryRepairReport.selection?.fingerprints,
+        categories: lastRepositoryRepairReport.selection?.categories,
+        files: lastRepositoryRepairReport.selection?.files
+      },
+      auth: false
+    });
+    lastRepositoryRepairReport = response.report;
+    lastRepositoryDetectionReport = {
+      ...response.report.detectionAfter,
+      repoRoot: response.report.repoRoot,
+      generatedAt: response.report.generatedAt
+    };
+    renderRepositoryFindings({
+      summary: response.report.detectionAfter?.summary || response.report.detectionBefore?.summary || { highestSeverity: "none" },
+      findings: response.report.detectionAfter?.findings || []
+    });
+    elements.repoOutput.textContent = JSON.stringify(response.report, null, 2);
+    elements.repoStatusLabel.textContent = repairStatusLabel(response.report.status);
+    updateRepositoryRepairActions();
   } catch (error) {
     renderRepositoryError(error);
   } finally {
@@ -691,6 +761,8 @@ function setRepositoryBusy(label) {
   elements.repoInitButton.disabled = true;
   elements.repoDetectButton.disabled = true;
   elements.repoRepairPreviewButton.disabled = true;
+  elements.repoRepairApplyButton.disabled = true;
+  elements.repoRepairReportButton.disabled = true;
   elements.repoExportJsonButton.disabled = true;
   elements.repoExportSarifButton.disabled = true;
 }
@@ -702,6 +774,14 @@ function clearRepositoryBusy() {
   elements.repoRepairPreviewButton.disabled = false;
   elements.repoExportJsonButton.disabled = false;
   elements.repoExportSarifButton.disabled = false;
+  updateRepositoryRepairActions();
+}
+
+function updateRepositoryRepairActions() {
+  const canApply = Boolean(lastRepositoryRepairReport?.dryRun && lastRepositoryRepairReport?.changes?.length);
+  const hasReport = Boolean(lastRepositoryRepairReport);
+  if (elements.repoRepairApplyButton) elements.repoRepairApplyButton.disabled = !canApply;
+  if (elements.repoRepairReportButton) elements.repoRepairReportButton.disabled = !hasReport;
 }
 
 function renderRepositoryInspection(report) {
@@ -864,6 +944,23 @@ function exportRepositoryJson() {
   downloadJson("patchproof-detect-report.json", lastRepositoryDetectionReport);
   elements.repoOutput.textContent = JSON.stringify(lastRepositoryDetectionReport, null, 2);
   elements.repoStatusLabel.textContent = "JSON exported";
+}
+
+function downloadRepositoryRepairReport() {
+  if (!lastRepositoryRepairReport) {
+    elements.repoStatusLabel.textContent = "No repair report";
+    return;
+  }
+  downloadJson("patchproof-repair-report.json", lastRepositoryRepairReport);
+  elements.repoStatusLabel.textContent = "Repair report downloaded";
+}
+
+function repairStatusLabel(status) {
+  if (status === "certified") return "Applied and certified";
+  if (status === "reverted-failed-tests") return "Rolled back";
+  if (status === "failed") return "Applied, tests failed";
+  if (status === "applied-unverified") return "Applied unverified";
+  return status || "Repair complete";
 }
 
 async function exportRepositorySarif() {

@@ -126,6 +126,55 @@ test("model provider generates structured repair candidates", async () => {
   assert.match(buildRepairPrompt({ source: "function x() {}" }), /complete replacement/);
 });
 
+test("model provider retries transient provider failures", async () => {
+  let calls = 0;
+  const generated = await generateModelCandidates({
+    settings: {
+      provider: "openai-compatible",
+      baseUrl: "https://models.example/v1",
+      apiKey: "secret",
+      model: "repair-model",
+      maxRetries: 1
+    },
+    input: {
+      source: "function increment(value) { return value; }",
+      tests: [{ args: [1], expect: 2 }],
+      bugReport: "increment should add one"
+    },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("rate limited", { status: 429, statusText: "Too Many Requests" });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  candidates: [
+                    {
+                      title: "Add one",
+                      rationale: "The function currently returns its input unchanged.",
+                      source: "function increment(value) { return value + 1; }"
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(generated.usage.attempts, 2);
+  assert.equal(generated.usage.retries, 1);
+  assert.equal(generated.candidates.length, 1);
+});
+
 test("OpenAI Responses provider uses structured output schema", async () => {
   let request;
   const generated = await generateModelCandidates({

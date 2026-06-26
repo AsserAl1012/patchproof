@@ -192,7 +192,8 @@ export function createPatchProofServer(options = {}) {
     if (requestPath === "/metrics") {
       await store.load();
       const metrics = await store.metrics();
-      const body = renderPrometheusMetrics(metrics);
+      const queueHealth = await queue.health().catch((error) => ({ ok: false, error: error.message }));
+      const body = renderPrometheusMetrics(metrics, queueHealth);
       res.writeHead(200, {
         ...securityHeaders,
         "Content-Type": "text/plain; charset=utf-8",
@@ -243,6 +244,15 @@ function isQuickApiPath(apiPath) {
 async function handleQuickApi({ req, res, apiPath, enableApi, enableQuickRun, rateLimit }) {
   if (!enableApi || !enableQuickRun) {
     writeJson(res, 404, { ok: false, error: { message: "API is disabled." } });
+    return;
+  }
+  if (apiPath.startsWith("/api/repository/") && !isLoopbackRequest(req) && process.env.PATCHPROOF_ENABLE_LOCAL_REPO_API !== "true") {
+    writeJson(res, 403, {
+      ok: false,
+      error: {
+        message: "Local repository APIs are restricted to loopback clients unless PATCHPROOF_ENABLE_LOCAL_REPO_API=true."
+      }
+    });
     return;
   }
   if (req.method !== "POST") {
@@ -402,6 +412,13 @@ async function handleQuickApi({ req, res, apiPath, enableApi, enableQuickRun, ra
   }
 
   throw notFound("API route");
+}
+
+function isLoopbackRequest(req) {
+  const remote = String(req.socket?.remoteAddress || "")
+    .replace(/^::ffff:/, "")
+    .replace(/^\[|\]$/g, "");
+  return remote === "127.0.0.1" || remote === "::1" || remote === "localhost";
 }
 
 function repositoryRequestOptions(payload = {}) {
@@ -1446,7 +1463,7 @@ function actorUserId(auth) {
   return auth.apiKey ? null : auth.user.id;
 }
 
-function renderPrometheusMetrics(metrics) {
+function renderPrometheusMetrics(metrics, queueHealth = null) {
   return [
     "# HELP patchproof_runs_total Total PatchProof runs.",
     "# TYPE patchproof_runs_total counter",
@@ -1454,6 +1471,12 @@ function renderPrometheusMetrics(metrics) {
     "# HELP patchproof_queue_depth Queued PatchProof jobs.",
     "# TYPE patchproof_queue_depth gauge",
     `patchproof_queue_depth ${metrics.queueDepth}`,
+    "# HELP patchproof_queue_in_flight_depth Leased PatchProof jobs reported by the active queue backend.",
+    "# TYPE patchproof_queue_in_flight_depth gauge",
+    `patchproof_queue_in_flight_depth ${queueHealth?.inFlight || 0}`,
+    "# HELP patchproof_queue_dead_depth Dead-letter PatchProof jobs reported by the active queue backend.",
+    "# TYPE patchproof_queue_dead_depth gauge",
+    `patchproof_queue_dead_depth ${queueHealth?.dead || 0}`,
     "# HELP patchproof_runner_count Available runners.",
     "# TYPE patchproof_runner_count gauge",
     `patchproof_runner_count ${metrics.runnerCount}`,

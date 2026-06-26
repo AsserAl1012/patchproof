@@ -511,6 +511,8 @@ test("SaaS admin endpoints expose settings, runners, readiness, and metrics", as
     assert.equal(metrics.status, 200);
     assert.match(text, /patchproof_runs_total/);
     assert.match(text, /patchproof_jobs_total/);
+    assert.match(text, /patchproof_queue_in_flight_depth/);
+    assert.match(text, /patchproof_queue_dead_depth/);
     assert.match(text, /patchproof_job_duration_ms_avg/);
 
     const retention = await request(baseUrl, "/api/admin/retention", {

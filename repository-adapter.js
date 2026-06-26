@@ -77,6 +77,7 @@ export async function inspectRepository(options = {}) {
   const buildCommands = detectBuildCommands({ packageJson, frameworks });
   const frameworkAdapters = detectFrameworkAdapters({ frameworks, testFiles });
   const dependencyFiles = detectDependencyFiles(files);
+  const native = detectNativeProjectMetadata({ files, cmakeLists, makefile, conanfile, vcpkg, frameworks });
 
   return {
     repoRoot,
@@ -87,6 +88,7 @@ export async function inspectRepository(options = {}) {
     frameworkAdapters,
     testCommands,
     buildCommands,
+    native,
     dependencyFiles,
     sourceFiles: sourceFiles.slice(0, 100),
     testFiles: testFiles.slice(0, 100),
@@ -240,7 +242,11 @@ export async function detectRepositoryBugs(options = {}) {
         maxBuffer: options.maxBuffer
       });
       if (!projectTest.ok) {
-        projectTest.frameworkFailures = analyzeProjectTestOutput(projectTest, repoRoot);
+        projectTest.frameworkFailures = await enrichFrameworkFailures(
+          analyzeProjectTestOutput(projectTest, repoRoot),
+          repoRoot,
+          files
+        );
         findings.push(repositoryFinding({
           severity: "high",
           category: "project-tests",
@@ -250,6 +256,11 @@ export async function detectRepositoryBugs(options = {}) {
           suggestion: "Open the failing test output and map the affected function into a PatchProof target."
         }));
         for (const failure of projectTest.frameworkFailures.slice(0, 10)) {
+          const impact = failure.nearestSymbol
+            ? `${failure.nearestSymbol.kind} ${failure.nearestSymbol.name}`
+            : failure.sourceCandidates?.length
+              ? `candidate source ${failure.sourceCandidates[0]}`
+              : "";
           findings.push(repositoryFinding({
             severity: "high",
             category: "framework-test-failure",
@@ -257,10 +268,11 @@ export async function detectRepositoryBugs(options = {}) {
             line: failure.line,
             title: "Framework test failure mapped to file",
             message: failure.name
-              ? `${failure.name} failed in ${failure.file || "the repository test output"}.`
-              : `A failing test stack frame was mapped to ${failure.file || "the repository test output"}.`,
+              ? `${failure.name} failed in ${failure.file || "the repository test output"}${impact ? ` near ${impact}` : ""}.`
+              : `A failing test stack frame was mapped to ${failure.file || "the repository test output"}${impact ? ` near ${impact}` : ""}.`,
             evidence: failure.evidence,
-            suggestion: "Use this failing test as the starting point for a PatchProof target or repository repair preview."
+            suggestion: "Use this failing test as the starting point for a PatchProof target or repository repair preview.",
+            metadata: { impact: failure }
           }));
         }
       }
@@ -671,9 +683,11 @@ export async function runRepositoryTestCommand(options = {}) {
 
 function spawnProjectCommand({ repoRoot, command, timeoutMs, maxBuffer }) {
   const startedAt = Date.now();
-  const result = spawnSync(command, {
+  const argv = parseProjectCommand(command);
+  const executable = resolveProjectExecutable(argv[0]);
+  const result = spawnSync(executable, argv.slice(1), {
     cwd: repoRoot,
-    shell: true,
+    shell: false,
     encoding: "utf8",
     windowsHide: true,
     timeout: timeoutMs,
@@ -687,6 +701,7 @@ function spawnProjectCommand({ repoRoot, command, timeoutMs, maxBuffer }) {
   return {
     ok: result.status === 0 && !result.error,
     command,
+    argv,
     status: result.status,
     signal: result.signal,
     durationMs: Date.now() - startedAt,
@@ -695,6 +710,56 @@ function spawnProjectCommand({ repoRoot, command, timeoutMs, maxBuffer }) {
     stdout: result.stdout || "",
     stderr: result.stderr || ""
   };
+}
+
+function parseProjectCommand(command) {
+  const text = String(command || "").trim();
+  if (!text) throw new Error("Repository test command is empty.");
+  const argv = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  for (const char of text) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        argv.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaping) current += "\\";
+  if (quote) throw new Error("Repository test command contains an unterminated quoted argument.");
+  if (current) argv.push(current);
+  if (!argv.length) throw new Error("Repository test command is empty.");
+  return argv;
+}
+
+function resolveProjectExecutable(executable) {
+  const name = String(executable || "");
+  if (process.platform !== "win32") return name;
+  if (/\.(?:cmd|exe|bat)$/i.test(name)) return name;
+  if (["npm", "npx", "pnpm", "yarn"].includes(name.toLowerCase())) return `${name}.cmd`;
+  return name;
 }
 
 function normalizeRepairSelection(options = {}) {
@@ -936,6 +1001,25 @@ function projectedDetectionAfter(detectionBefore, changes) {
   };
 }
 
+function buildStaticRepositoryRepairPlan({ changes, projectTest }) {
+  return {
+    kind: "static-rewrite-plan",
+    semanticClaim: false,
+    files: changes.map((change) => ({
+      file: change.file,
+      repairCount: change.repairCount,
+      fingerprints: change.replacements.map((replacement) => replacement.fingerprint).filter(Boolean),
+      categories: [...new Set(change.replacements.map((replacement) => replacement.category).filter(Boolean))]
+    })),
+    validation: {
+      requested: Boolean(projectTest),
+      command: projectTest?.command || "",
+      status: projectTest ? (projectTest.ok ? "passed" : "failed") : "not-run"
+    },
+    nextSemanticStep: "Run framework/project tests with coverage and promote validated function-level targets into PatchProof certificates."
+  };
+}
+
 function repositoryRepairReport({ repoRoot, configPath, status, dryRun, changes, detectionBefore, detectionAfter, projectTest, repairContext = {}, message }) {
   const publicChanges = changes.map((change) => ({
     file: change.file,
@@ -953,6 +1037,7 @@ function repositoryRepairReport({ repoRoot, configPath, status, dryRun, changes,
     message,
     repairMode: "static-rewrite-project-test",
     semanticClaim: false,
+    repairPlan: buildStaticRepositoryRepairPlan({ changes, projectTest }),
     selection: repairContext.selection || normalizeRepairSelection(),
     skippedRepairs: repairContext.skippedRepairs || [],
     writePolicy: {
@@ -1563,7 +1648,7 @@ function matchesSuppression(finding, rule) {
   return finding.category === text || finding.title === text;
 }
 
-function repositoryFinding({ severity, category, file = null, line = null, title, message, evidence = "", suggestion = "" }) {
+function repositoryFinding({ severity, category, file = null, line = null, title, message, evidence = "", suggestion = "", metadata = null }) {
   const finding = {
     severity,
     category,
@@ -1572,7 +1657,8 @@ function repositoryFinding({ severity, category, file = null, line = null, title
     title,
     message,
     evidence,
-    suggestion
+    suggestion,
+    ...(metadata ? { metadata } : {})
   };
   return {
     ...finding,
@@ -1631,7 +1717,8 @@ export function repositoryDetectionToSarif(report) {
         severity: finding.severity,
         category: finding.category,
         evidence: finding.evidence || "",
-        suggestion: finding.suggestion || ""
+        suggestion: finding.suggestion || "",
+        metadata: finding.metadata || {}
       },
       locations: finding.file
         ? [{
@@ -1714,6 +1801,103 @@ function analyzeProjectTestOutput(result, repoRoot) {
     }
   }
   return failures.slice(0, 25);
+}
+
+async function enrichFrameworkFailures(failures, repoRoot, files = []) {
+  const enriched = [];
+  for (const failure of failures) {
+    const next = {
+      ...failure,
+      language: languageFromPath(failure.file || ""),
+      nearestSymbol: null,
+      sourceCandidates: candidateSourceFilesForFailure(failure.file, files)
+    };
+    if (failure.file && failure.line) {
+      const text = await readTextIfExists(repoRoot, failure.file);
+      if (text !== null) next.nearestSymbol = nearestSymbolForLine(text, failure.file, failure.line);
+    }
+    enriched.push(next);
+  }
+  return enriched;
+}
+
+function candidateSourceFilesForFailure(file, files = []) {
+  if (!file || !isTestFile(file)) return [];
+  const name = basename(file).replace(/\.(?:mjs|cjs|js|jsx|ts|tsx|py|c|cc|cpp|cxx|h|hpp)$/i, "");
+  const stems = new Set([
+    name,
+    name.replace(/\.(?:test|spec)$/i, ""),
+    name.replace(/_test$/i, ""),
+    name.replace(/^test_/i, "")
+  ].filter(Boolean));
+  return files
+    .filter((candidate) => isSourceFile(candidate) && !isTestFile(candidate))
+    .filter((candidate) => stems.has(basename(candidate).replace(/\.(?:mjs|cjs|js|jsx|ts|tsx|py|c|cc|cpp|cxx|h|hpp)$/i, "")))
+    .slice(0, 10);
+}
+
+function nearestSymbolForLine(source, file, line) {
+  const language = languageFromPath(file);
+  if (language === "javascript" || language === "typescript") return nearestJavaScriptSymbol(source, file, line);
+  if (language === "python") return nearestRegexSymbol(source, line, [
+    { kind: "class", pattern: /^\s*class\s+([A-Za-z_]\w*)\b/ },
+    { kind: "function", pattern: /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/ }
+  ]);
+  if (language === "c" || language === "cpp") return nearestRegexSymbol(source, line, [
+    { kind: "test", pattern: /^\s*(?:TEST|TEST_F|SCENARIO)\s*\(\s*([^,)]+)/ },
+    { kind: "function", pattern: /^\s*(?:[\w:*&<>\[\]\s]+)\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const\s*)?\{/ }
+  ]);
+  return null;
+}
+
+function nearestJavaScriptSymbol(source, file, line) {
+  try {
+    const offsets = lineStartOffsets(String(source || ""));
+    const candidates = listJavaScriptFunctionCandidates(source, file).map((candidate) => ({
+      kind: "function",
+      name: candidate.functionName,
+      line: lineNumberAtOffset(offsets, candidate.start)
+    }));
+    return nearestSymbolFromCandidates(candidates, line) || nearestJavaScriptRegexSymbol(source, line);
+  } catch {
+    return nearestJavaScriptRegexSymbol(source, line);
+  }
+}
+
+function nearestJavaScriptRegexSymbol(source, line) {
+  return nearestRegexSymbol(source, line, [
+    { kind: "function", pattern: /^\s*(?:export\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/ },
+    { kind: "function", pattern: /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/ },
+    { kind: "test", pattern: /^\s*(?:it|test)\s*\(\s*["']([^"']+)/ }
+  ]);
+}
+
+function nearestRegexSymbol(source, line, matchers) {
+  const lines = String(source || "").split(/\r?\n/);
+  const candidates = [];
+  for (let index = 0; index < Math.min(lines.length, Math.max(1, Number(line || 1))); index += 1) {
+    for (const matcher of matchers) {
+      const match = lines[index].match(matcher.pattern);
+      if (match) candidates.push({ kind: matcher.kind, name: match[1], line: index + 1 });
+    }
+  }
+  return nearestSymbolFromCandidates(candidates, line);
+}
+
+function nearestSymbolFromCandidates(candidates, line) {
+  const target = Number(line || 1);
+  return candidates
+    .filter((candidate) => candidate.line <= target)
+    .sort((a, b) => b.line - a.line)[0] || null;
+}
+
+function lineNumberAtOffset(offsets, offset) {
+  let line = 1;
+  for (let index = 0; index < offsets.length; index += 1) {
+    if (offsets[index] > offset) break;
+    line = index + 1;
+  }
+  return line;
 }
 
 function pushMappedFailure(failures, seen, { repoRoot, fileText, line, name, evidence }) {
@@ -1946,6 +2130,33 @@ function detectBuildCommands({ packageJson, frameworks }) {
   }
   if (frameworks.includes("make")) commands.push({ tool: "make", command: "make" });
   return commands;
+}
+
+function detectNativeProjectMetadata({ files, cmakeLists, makefile, conanfile, vcpkg, frameworks }) {
+  const nativeFiles = files.filter((file) => /\.(?:c|cc|cpp|cxx|h|hpp|hh|hxx)$/.test(file));
+  const configText = [cmakeLists, makefile, conanfile, vcpkg].filter(Boolean).join("\n");
+  const sanitizerFlags = [...new Set([...configText.matchAll(/-fsanitize=([A-Za-z0-9_,+-]+)/g)].flatMap((match) => match[1].split(",")))];
+  const compileDatabases = files.filter((file) => /(?:^|\/)compile_commands\.json$/.test(file));
+  const buildSystems = [];
+  if (cmakeLists) buildSystems.push("cmake");
+  if (makefile) buildSystems.push("make");
+  if (conanfile) buildSystems.push("conan");
+  if (vcpkg) buildSystems.push("vcpkg");
+  return {
+    detected: nativeFiles.length > 0,
+    sourceFiles: nativeFiles.length,
+    buildSystems,
+    testFrameworks: frameworks.filter((framework) => ["ctest", "gtest", "catch2", "doctest", "native-c-cpp"].includes(framework)),
+    compileDatabases,
+    compileDatabaseAvailable: compileDatabases.length > 0,
+    sanitizerFlags,
+    sanitizerCoverageSuggested: nativeFiles.length > 0 && !sanitizerFlags.length,
+    clangAstReady: compileDatabases.length > 0,
+    nextCommands: [
+      ...(compileDatabases.length ? [] : ["cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]),
+      ...(frameworks.includes("ctest") ? ["ctest --test-dir build --output-on-failure"] : [])
+    ]
+  };
 }
 
 function frameworkMatchesFile(framework, file) {
@@ -2511,8 +2722,8 @@ function extractPythonFunction(source, functionName, sourcePath) {
 function extractPythonFunctionSpan(source, functionName, sourcePath) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const pattern = functionName
-    ? new RegExp(`^(\\s*)def\\s+${escapeRegex(functionName)}\\s*\\(`)
-    : /^(\s*)def\s+([A-Za-z_]\w*)\s*\(/;
+    ? new RegExp(`^(\\s*)(?:async\\s+)?def\\s+${escapeRegex(functionName)}\\s*\\(`)
+    : /^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/;
   const matches = [];
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(pattern);
@@ -2542,7 +2753,7 @@ function extractPythonFunctionSpan(source, functionName, sourcePath) {
   const startOffset = lineOffsets[start] + indent;
   const endOffset = end >= lineOffsets.length ? source.length : lineOffsets[end];
   return {
-    functionName: functionName || lines[start].match(/def\s+([A-Za-z_]\w*)\s*\(/)?.[1] || "",
+    functionName: functionName || lines[start].match(/(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/)?.[1] || "",
     start: startOffset,
     end: endOffset,
     indent,

@@ -78,6 +78,16 @@ button:disabled {
   opacity: 0.68;
 }
 
+.danger-button {
+  border-color: rgba(180, 35, 24, 0.35);
+  color: var(--red);
+}
+
+.danger-button:not(:disabled):hover {
+  background: #fff5f5;
+  border-color: rgba(180, 35, 24, 0.7);
+}
+
 button.primary {
   background: var(--primary);
   border-color: var(--primary);

@@ -27,6 +27,7 @@ export function normalizeModelProvider(settings = {}) {
   const maxCandidates = positiveInteger(settings.maxCandidates, 8, "maxCandidates");
   const maxPromptChars = positiveInteger(settings.maxPromptChars, 20000, "maxPromptChars");
   const timeoutMs = positiveInteger(settings.timeoutMs, 60000, "timeoutMs");
+  const maxRetries = nonnegativeInteger(settings.maxRetries ?? process.env.PATCHPROOF_MODEL_MAX_RETRIES ?? 2, 2, "maxRetries");
 
   if (provider !== "disabled" && !baseUrl) {
     throw new Error("Model provider baseUrl is required.");
@@ -43,6 +44,7 @@ export function normalizeModelProvider(settings = {}) {
     maxCandidates,
     maxPromptChars,
     timeoutMs,
+    maxRetries,
     apiVersion: String(settings.apiVersion || "2024-10-21"),
     promptLogging: Boolean(settings.promptLogging),
     privacyMode: settings.privacyMode !== false
@@ -90,7 +92,8 @@ export function estimateModelUsage({ settings = {}, input = {} } = {}) {
     estimatedPromptTokens: Math.ceil(prompt.length / 4),
     maxPromptChars: normalized.maxPromptChars,
     maxCompletionTokens: normalized.maxTokens,
-    maxCandidates: normalized.maxCandidates
+    maxCandidates: normalized.maxCandidates,
+    maxRetries: normalized.maxRetries
   };
 }
 
@@ -121,29 +124,68 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
   if (normalized.provider === "azure-openai") headers["api-key"] = apiKey;
   else if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-  const response = await fetchImpl(modelEndpoint(normalized), {
-    method: "POST",
-    headers,
-    signal: AbortSignal.timeout(normalized.timeoutMs),
-    body: JSON.stringify(modelRequestBody(normalized, input, prompt))
-  }).catch((error) => {
-    throw new Error(`Model provider request failed: ${error.message}`);
-  });
+  let payload = null;
+  let responseText = "";
+  let attempts = 0;
+  const errors = [];
+  for (let attempt = 0; attempt <= normalized.maxRetries; attempt += 1) {
+    attempts = attempt + 1;
+    try {
+      const response = await fetchImpl(modelEndpoint(normalized), {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(normalized.timeoutMs),
+        body: JSON.stringify(modelRequestBody(normalized, input, prompt))
+      }).catch((error) => {
+        const wrapped = new Error(`Model provider request failed: ${error.message}`);
+        wrapped.retryable = true;
+        throw wrapped;
+      });
 
-  const responseText = await response.text();
-  if (!response.ok) {
-    throw new Error(
-      `Model provider returned HTTP ${response.status}: ${responseText.slice(0, 500) || response.statusText}`
-    );
+      responseText = await response.text();
+      if (!response.ok) {
+        const error = new Error(
+          `Model provider returned HTTP ${response.status}: ${responseText.slice(0, 500) || response.statusText}`
+        );
+        error.retryable = isRetryableHttpStatus(response.status);
+        throw error;
+      }
+
+      try {
+        payload = JSON.parse(responseText);
+      } catch (error) {
+        const wrapped = new Error(`Model provider returned invalid JSON: ${error.message}`);
+        wrapped.retryable = false;
+        throw wrapped;
+      }
+      break;
+    } catch (error) {
+      errors.push(error.message);
+      if (attempt >= normalized.maxRetries || !isRetryableModelError(error)) {
+        throw new Error(`Model provider failed after ${attempts} attempt(s): ${errors.join(" | ")}`);
+      }
+      await sleep(retryDelayMs(attempt));
+    }
   }
 
-  let payload;
-  try {
-    payload = JSON.parse(responseText);
-  } catch (error) {
-    throw new Error(`Model provider returned invalid JSON: ${error.message}`);
-  }
+  const candidates = buildModelCandidates({ payload, normalized, prompt, input });
 
+  return {
+    candidates,
+    provenance: modelProvenance(normalized, prompt, candidates.map((candidate) => candidate.source).join("\n\n")),
+    provider: normalized.provider,
+    model: normalized.model,
+    usage: {
+      ...usage,
+      responseChars: responseText.length,
+      returnedCandidates: candidates.length,
+      attempts,
+      retries: Math.max(0, attempts - 1)
+    }
+  };
+}
+
+function buildModelCandidates({ payload, normalized, prompt, input }) {
   const candidates = [];
   const seen = new Set();
   for (const content of responseCandidateTexts(payload, normalized)) {
@@ -166,18 +208,7 @@ export async function generateModelCandidates({ settings = {}, input = {}, fetch
   if (!candidates.length) {
     throw new Error(`Model provider returned no usable ${String(input.language || "javascript")} repair candidates.`);
   }
-
-  return {
-    candidates,
-    provenance: modelProvenance(normalized, prompt, candidates.map((candidate) => candidate.source).join("\n\n")),
-    provider: normalized.provider,
-    model: normalized.model,
-    usage: {
-      ...usage,
-      responseChars: responseText.length,
-      returnedCandidates: candidates.length
-    }
-  };
+  return candidates;
 }
 
 function modelEndpoint(settings) {
@@ -324,6 +355,28 @@ function positiveInteger(value, fallback, label) {
   return result;
 }
 
+function nonnegativeInteger(value, fallback, label) {
+  const result = Number(value ?? fallback);
+  if (!Number.isInteger(result) || result < 0) throw new Error(`${label} must be a non-negative integer.`);
+  return result;
+}
+
 function hash(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function isRetryableHttpStatus(status) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isRetryableModelError(error) {
+  return error?.retryable === true;
+}
+
+function retryDelayMs(attempt) {
+  return Math.min(2000, 250 * 2 ** Math.max(0, Number(attempt || 0)));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
 }

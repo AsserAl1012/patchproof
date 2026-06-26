@@ -373,6 +373,47 @@ def test_slugify_local_bindings(yielded_expected):
   ]);
 });
 
+test("repository adapter extracts async pytest assertions", async () => {
+  const repo = await fixtureRepo("repo-pytest-async-");
+  await mkdir(join(repo, "src"), { recursive: true });
+  await mkdir(join(repo, "tests"), { recursive: true });
+  await writeFile(join(repo, "src", "service.py"), "async def normalize(raw):\n    return raw.strip().lower()\n", "utf8");
+  await writeFile(join(repo, "tests", "test_service.py"), `
+import pytest
+
+@pytest.fixture
+async def raw_name():
+    return " Docs "
+
+@pytest.mark.asyncio
+async def test_normalize(raw_name):
+    expected = "docs"
+    assert await normalize(raw_name) == expected
+`, "utf8");
+  await writeFile(join(repo, "patchproof.yml"), `
+version: 1
+project:
+  language: python
+  allowedPaths:
+    - src/**
+    - tests/**
+targets:
+  normalize:
+    language: python
+    source: src/service.py
+    frameworkTests: tests/test_service.py
+    framework: pytest
+    function: normalize
+`, "utf8");
+
+  const input = await createInputFromRepositoryTarget({ repoRoot: repo, targetId: "normalize" });
+  const tests = JSON.parse(input.testsText);
+  assert.match(input.source, /^async def normalize/);
+  assert.equal(tests.length, 1);
+  assert.deepEqual(tests[0].args, [" Docs "]);
+  assert.equal(tests[0].expect, "docs");
+});
+
 test("repository init creates a starter config from checkout metadata", async () => {
   const repo = await fixtureRepo("repo-init-");
   await mkdir(join(repo, "src"), { recursive: true });
@@ -542,6 +583,11 @@ TEST(Buffer, Copy) {
   assert.ok(inspection.testCommands.some((item) => item.command.includes("ctest")));
   assert.ok(inspection.buildCommands.some((item) => item.command === "cmake -S . -B build"));
   assert.ok(inspection.buildCommands.some((item) => item.command === "cmake --build build"));
+  assert.equal(inspection.native.detected, true);
+  assert.ok(inspection.native.buildSystems.includes("cmake"));
+  assert.ok(inspection.native.testFrameworks.includes("gtest"));
+  assert.equal(inspection.native.compileDatabaseAvailable, false);
+  assert.ok(inspection.native.nextCommands.some((command) => command.includes("CMAKE_EXPORT_COMPILE_COMMANDS")));
 
   const report = await detectRepositoryBugs({ repoRoot: repo });
   assert.equal(report.summary.highestSeverity, "high");
@@ -730,10 +776,12 @@ project:
 
 test("repository detection maps failing framework output to files", async () => {
   const repo = await fixtureRepo("repo-test-failure-map-");
+  await mkdir(join(repo, "src"), { recursive: true });
   await mkdir(join(repo, "tests"), { recursive: true });
-  await writeFile(join(repo, "tests", "math.test.js"), "throw new Error('bad math');\n", "utf8");
+  await writeFile(join(repo, "src", "math.js"), "export function add(a, b) { return a - b; }\n", "utf8");
+  await writeFile(join(repo, "tests", "math.test.js"), "test('adds_numbers', () => {\n  throw new Error('bad math');\n});\n", "utf8");
   await writeFile(join(repo, "test-command.js"), `console.error("FAILED tests/math.test.js::adds_numbers");
-console.error("    at Object.<anonymous> (tests/math.test.js:1:7)");
+console.error("    at Object.<anonymous> (tests/math.test.js:2:9)");
 process.exit(1);
 `, "utf8");
 
@@ -744,7 +792,11 @@ process.exit(1);
   });
   const mapped = report.findings.filter((finding) => finding.category === "framework-test-failure");
   assert.ok(mapped.some((finding) => finding.file === "tests/math.test.js"));
-  assert.ok(report.projectTest.frameworkFailures.some((failure) => failure.file === "tests/math.test.js"));
+  assert.ok(report.projectTest.frameworkFailures.some((failure) =>
+    failure.file === "tests/math.test.js" &&
+    failure.nearestSymbol?.name === "adds_numbers" &&
+    failure.sourceCandidates.includes("src/math.js")
+  ));
 });
 
 test("repository adapter can install dependencies before project tests", async () => {

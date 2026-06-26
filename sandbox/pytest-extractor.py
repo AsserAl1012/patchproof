@@ -11,9 +11,9 @@ def main():
     tests = []
     fixtures = literal_fixtures(tree)
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             extract_body_tests(node.body, function_name, tests, test_bindings(node, fixtures))
-        elif isinstance(node, (ast.Assert, ast.With)):
+        elif isinstance(node, (ast.Assert, ast.With, ast.AsyncWith)):
             extract_body_tests([node], function_name, tests, [{}])
     sys.stdout.write(json.dumps({"tests": tests}))
 
@@ -34,7 +34,7 @@ def extract_statement_tests(statements, function_name, tests, bindings):
         extracted = None
         if isinstance(node, ast.Assert):
             extracted = assertion_to_test(node.test, function_name, len(tests) + 1, bindings)
-        elif isinstance(node, ast.With):
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
             extracted = raises_to_test(node, function_name, len(tests) + 1, bindings)
         elif isinstance(node, ast.If):
             extract_statement_tests(node.body, function_name, tests, dict(bindings))
@@ -83,7 +83,7 @@ def assertion_to_test(node, function_name, index, bindings=None):
             return None
     if not isinstance(node, ast.Compare) or len(node.ops) != 1 or len(node.comparators) != 1:
         return None
-    call = node.left
+    call = unwrap_await(node.left)
     if not is_target_call(call, function_name):
         return None
     if not isinstance(node.ops[0], (ast.Eq, ast.Is)):
@@ -109,8 +109,8 @@ def raises_to_test(node, function_name, index, bindings=None):
         return None
     target_call = None
     for statement in node.body:
-        if isinstance(statement, ast.Expr) and is_target_call(statement.value, function_name):
-            target_call = statement.value
+        if isinstance(statement, ast.Expr) and is_target_call(unwrap_await(statement.value), function_name):
+            target_call = unwrap_await(statement.value)
             break
     if not target_call:
         return None
@@ -125,10 +125,15 @@ def raises_to_test(node, function_name, index, bindings=None):
 
 
 def is_target_call(node, function_name):
+    node = unwrap_await(node)
     if not isinstance(node, ast.Call):
         return False
     name = call_name(node.func)
     return name == function_name or name.endswith(f".{function_name}")
+
+
+def unwrap_await(node):
+    return node.value if isinstance(node, ast.Await) else node
 
 
 def call_name(node):
@@ -182,7 +187,7 @@ def test_bindings(function_node, fixtures):
 def literal_fixtures(tree):
     fixtures = {}
     for node in tree.body:
-        if not isinstance(node, ast.FunctionDef) or not has_fixture_decorator(node):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not has_fixture_decorator(node):
             continue
         if node.args.args or node.args.vararg or node.args.kwarg or node.args.kwonlyargs:
             continue
